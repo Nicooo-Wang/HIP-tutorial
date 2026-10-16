@@ -39,9 +39,9 @@ TEST_CASE(tiled_all_shapes, 4) {
 }
 
 // 校准（gfx942 空闲卡，5 次）：参考答案(32×32 tile, 32×8 block, 每线程 4 输出) ≈ 4636 GFLOPS（最小 4635.6），
-// naive(m3) ≈ 1149 GFLOPS（最大 1148.8），S/N≈4.0；取 floor100(sqrt(S_min·N_max)) = 2300，对两端各约 2.0× 余量。
+// naive(m3) ≈ 1149 GFLOPS（最大 1148.8），S/N≈4.0；几何平均 2307；按审查要求下调为 2000（对 naive 1.74×、16×16 变体 1.55×、参考答案 2.3× 余量）。
 // 合理自写变体：16×16 tile/16×16 block/每线程 1 输出 ≈ 3107；32×32 tile 无 padding ≈ 4553；均高于阈值。
-constexpr double kTiledGflops = 2300.0;
+constexpr double kTiledGflops = 2000.0;
 PERF_CASE(tiled_gflops, 4) {
   const int M = 2048, N = 2048, K = 2048;
   auto ha = hk::random_floats(size_t(M) * K, 5), hb = hk::random_floats(size_t(K) * N, 6);

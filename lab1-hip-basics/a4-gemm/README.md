@@ -31,7 +31,7 @@ make run A=a4 CASE=tiled_gflops          # 只运行一个用例，看原始输�
 | `naive_all_shapes` | 3 | naive，(M,N,K) = 1×1×1、17×33×65、64³、128×96×200、500×300×257、512³ |
 | `tiled_aligned` | 2 | tiled，128³ |
 | `tiled_all_shapes` | 4 | tiled，同上全部形状（含非整除、K 不是 tile 的倍数） |
-| `tiled_gflops`（性能） | 4 | M=N=K=2048 的 fp32 GEMM 须达到 2300 GFLOPS（参考实现约 4600；naive 约 1150） |
+| `tiled_gflops`（性能） | 4 | M=N=K=2048 的 fp32 GEMM 须达到 2000 GFLOPS（参考实现约 4600；naive 约 1150） |
 
 正确性按逐元素误差界判定：`|C - ref| ≤ 1e-5 · Σ|a·b| + 1e-6`，与求和顺序无关，所以你可以随意安排 K 方向的累加顺序。
 
