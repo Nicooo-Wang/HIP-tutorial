@@ -48,10 +48,13 @@ TEST_CASE(repeatable_output, 1) {
   float a = out.download()[0];
   reduce_sum_shfl(in.get(), n, out.get(), ws.get(), nullptr);
   float b = out.download()[0];
+  double ref = 0, mag = 0;
+  for (float x : h) { ref += x; mag += std::fabs(x); }
+  if (!(std::fabs(a - ref) <= 1e-5 * mag + 1e-6)) { hk::fail(R, "第一次调用结果错误：期望 %.9g，得到 %.9g", ref, a); return; }
   if (!(std::fabs(a - b) <= 1e-5 * n)) hk::fail(R, "两次调用结果不同：%.9g vs %.9g（是否把结果累加到了旧的 out 上？）", a, b);
 }
 
-constexpr double kReduceRatio = 0.03;  // 校准值：参考答案约 0.75×拷贝带宽，单 block 版约 0.002×；取 floor2(sqrt(S·N))
+constexpr double kReduceRatio = 0.45;  // 校准：参考答案约 0.75×拷贝带宽，单 block 版约 0.002×（S/N>10）；取 floor2(S/1.67)，对参考答案留 1.5× 余量
 PERF_CASE(shfl_bandwidth, 3) {
   int n = 1 << 26;
   size_t bytes = size_t(n) * sizeof(float);

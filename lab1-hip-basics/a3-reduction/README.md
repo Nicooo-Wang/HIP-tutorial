@@ -43,7 +43,7 @@ make run A=a3 CASE=shfl_bandwidth        # 只运行一个用例，看原始输�
 | `shfl_exact_ones` | 3 | shuffle 版本，同上 |
 | `shfl_random` | 2 | shuffle 版本，同上 |
 | `repeatable_output` | 1 | 连续调用两次，结果必须一致 |
-| `shfl_bandwidth`（性能） | 3 | n = 2^26 的读带宽须达到同进程实测拷贝带宽的 3%（参考实现约 75%；只用 1 个 block 的实现只有约 0.2%） |
+| `shfl_bandwidth`（性能） | 3 | n = 2^26 的读带宽须达到同进程实测拷贝带宽的 45%（参考实现约 75%；只用 1 个 block 的实现只有约 0.2%） |
 
 全 1 输入在 n < 2^24 时，任何求和顺序的结果都精确等于 n，所以可以精确比较，漏掉或重复一个元素都会被抓住。
 
