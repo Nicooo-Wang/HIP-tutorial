@@ -31,8 +31,11 @@ static void ones(hk::Result& R, int rows, int cols) {
 }
 
 TEST_CASE(aligned_small, 2)     { ones(R, 8, 256); run(R, 8, 256, 1); }
-TEST_CASE(many_col_tiles, 2)    { ones(R, 16, 4096); run(R, 24, 1024 + 256, 2); }
+TEST_CASE(many_col_tiles, 2)    { ones(R, 16, 4096); ones(R, 5, 260); run(R, 24, 1024 + 256, 2); }
 TEST_CASE(ragged_cols, 3)       { ones(R, 5, 31); ones(R, 3, 257); run(R, 33, 31, 3); run(R, 100, 1001, 4); run(R, 7, 4099, 5); }
+// cols % 4 == 2：偶数但不是 4 的倍数。把“偶数”当成可以承诺向量 4 的分派会在这里出错；
+// 三路分派（4 / 2 / 1）的向量 2 分支也只在这里被执行到
+TEST_CASE(cols_mod4_eq2, 2)     { ones(R, 5, 30); ones(R, 3, 258); ones(R, 4, 4098); run(R, 17, 1002, 11); run(R, 9, 6, 12); run(R, 8, 2, 13); }
 TEST_CASE(ragged_rows, 2)       { ones(R, 1, 256); ones(R, 13, 512); run(R, 1, 1, 6); run(R, 1001, 64, 7); }
 TEST_CASE(large, 1)             { run(R, 4096, 4096, 8); }
 
@@ -57,7 +60,7 @@ PERF_CASE(bandwidth_aligned, 3) {
   auto o = out.download();
   for (int r = 0; r < rows; ++r) if (o[r] != float(cols)) { hk::fail(R, "结果错误 out[%d]=%g", r, o[r]); return; }
   if (R.metric < kRowSumRatio * copy) {
-    hk::fail(R, "读带宽 %.0f GB/s，低于目标 %.0f GB/s（= %.0f%% × 本次实测拷贝带宽 %.0f GB/s）。cols 是 4 的倍数时是否用了向量化配置？",
+    hk::fail(R, "读带宽 %.0f GB/s，低于目标 %.0f GB/s（= %.0f%% × 本次实测拷贝带宽 %.0f GB/s），远低于拷贝带宽。检查访存模式（是否合并）与并行度（grid、每 block 的 wavefront 数）；没有向量化是可能原因之一。",
              R.metric, kRowSumRatio * copy, kRowSumRatio * 100, copy);
   } else {
     char buf[160];

@@ -8,7 +8,7 @@ using namespace ck_tile;
 
 // TODO(a3-1): 自主设计 CK-Tile 行归约（讲义 §3.1–3.5）
 //   需要决定：一个 block 处理几行、行/列分别映射到 warp/lane/Y 的哪一段、tile 宽度、怎样沿列滑动窗口。
-//   必须遵守的约束（读 ck_tile/ops/reduce/block/block_reduce.hpp 开头的注释）：
+//   必须遵守的约束（读 ck_tile/ops/reduce/block/block_reduce.hpp 第 9 行、第 12–15 行与第 257–260 行的注释）：
 //     · block_tile_reduce 要求至少一个 Y 维不被归约
 //     · block_tile_reduce_sync 只做 warp 内（跨 lane）归约 —— 所以一行不能跨 warp
 //   边界：行数、列数都可能不是 tile 的整数倍（复习 a2 的 pad_tensor_view）。

@@ -12,7 +12,8 @@ void launch_ck_row_sum(const float* in, float* out, int rows, int cols, hipStrea
 
 约束：
 
-- 一行不能跨 warp（`block_tile_reduce_sync` 的限制，见 `ck_tile/ops/reduce/block/block_reduce.hpp` 开头的注释）。
+- 一行不能跨 warp（`block_tile_reduce_sync` 只在 wavefront 内合并，见 `ck_tile/ops/reduce/block/block_reduce.hpp` 第 9 行的注释与讲义 §3.2 末尾）。
+- 结果方向（行）上至少要留一个 Y 维不被归约（同文件第 12–15 行、第 257–260 行的注释，讲义 §3.1）。
 - 行数、列数都可能不是 tile 的整数倍；只有当 `cols` 满足对齐条件时才可以声明向量长度大于 1，而 `cols` 在运行时才知道。
 - 不要写数组范围之外的内存，不要修改输入，`stream` 原样传给 kernel 启动语句。
 
@@ -30,8 +31,9 @@ make run A=a3 CASE=ragged_cols             # 只运行一个用例，看原始�
 | 用例 | 分值 | 检查什么 |
 |------|------|----------|
 | `aligned_small` | 2 | 8×256 |
-| `many_col_tiles` | 2 | 列数远大于一个 tile 的宽度：窗口必须沿列滑动 |
-| `ragged_cols` | 3 | cols = 31、257、1001、4099（不是 4 的倍数） |
+| `many_col_tiles` | 2 | 列数远大于一个 tile 的宽度：窗口必须沿列滑动（16×4096、24×1280；另有 5×260：4 的倍数，但最后一块只剩几列） |
+| `ragged_cols` | 3 | cols = 31、257、1001、4099（奇数，cols % 4 为 1 或 3） |
+| `cols_mod4_eq2` | 2 | cols = 30、258、4098、1002、6、2（偶数但 cols % 4 == 2）：把“偶数”当作可以承诺向量 4 会在这里出错；若你写了向量 2 的分支，它也只在这里被执行 |
 | `ragged_rows` | 2 | 1 行、13 行、1001 行、1×1 |
 | `large` | 1 | 4096×4096 |
 | `bandwidth_aligned`（性能） | 3 | 8192×8192（cols 是 4 的倍数）：读带宽不低于同进程实测 D2D 拷贝带宽的 80%（只是“不至于慢得离谱”的下限） |
@@ -51,9 +53,22 @@ make run A=a3 CASE=ragged_cols             # 只运行一个用例，看原始�
 
 <details><summary>Hint 2（关键步骤）</summary>
 
-- `block_tile_reduce<float>(tile, sequence<1>{}, f, 0.0f)` 返回的张量比 `tile` 少了第 1 个 Y 维；循环中用 4 个参数的重载把后续 tile 累加进去；循环结束后做一次 `block_tile_reduce_sync`；输出窗口的 distribution 用 `acc.get_tile_distribution()`。
-- 行方向的 H 段由 warp 和 Y0 分担，列方向的 H 段由 lane 和 Y1 分担；Y0 不被归约（`block_tile_reduce` 要求至少一个 Y 维保留）。
-- `make_naive_tensor_view` 的倒数第二个参数是“保证的最内维向量长度”，必须如实声明；用 `cols % 4 == 0` 在运行时选择不同的模板实例。
+- 分布：行方向的 H 段由 warp 和一个 Y 分担，这个 Y 不被归约；列方向的 H 段由 lane 和另一个 Y 分担，这个 Y 是每个 lane 一次读的连续元素，也是被归约的那一个。对照讲义 §3.1 的自查，确认“一行的所有元素都在同一个 wavefront 里”。
+- 归约分三层：每一块 tile 先在线程内合并（讲义 §3.1 的两个 `block_tile_reduce` 重载：第一块用“返回新累加器”的版本，之后各块用“累加进已有累加器”的版本）；整行走完之后，跨 lane 合并一次（§3.2）；最后把结果写回。想一想跨 lane 合并为什么不该放在循环里。
+- 写回：输出是一维的，行数同样可能不整除；输出窗口的分布要和累加器一致，不必自己设计（§3.2）。
+- 向量长度：视图的倒数第二个参数必须如实承诺（§3.4）；`cols` 的整除性在主机端判断，按结果启动不同的模板实例（§3.5）。
+
+</details>
+
+<details><summary>Hint 3（卡住很久再看）</summary>
+
+只给步骤顺序，不给代码：
+
+1. 定常量：每 block 几个 wavefront、每个 wavefront 管几行、每个 lane 一次读几个连续元素；由它们算出 tile 的高和宽。向量长度做成 kernel 的模板参数。
+2. kernel 里：输入视图（承诺向量长度，两维都 pad 到 tile）→ 分布 → 窗口，原点的行坐标来自 `blockIdx.x`，列坐标从 0 开始。
+3. 对第一块建累加器；循环里先挪窗口、再 load、再累加，直到走完 `cols`；循环外做一次跨 lane 合并。
+4. 一维的输出视图（同样 pad）+ 借用累加器分布的窗口，store。
+5. 主机端：grid 向上取整；按 `cols` 的整除性选模板实例，`stream` 原样传入。
 
 </details>
 
@@ -65,8 +80,8 @@ make run A=a3 CASE=ragged_cols             # 只运行一个用例，看原始�
 
 ## 书面问题（写到 ../answers.md）
 
-1. 为什么 `cols % 4 ≠ 0` 时声明向量长度 4 会出错？（提示：每行起始地址的对齐。）
-2. `block_tile_reduce_sync` 之后，同一行的 64 个 lane 都持有结果，`store_tile` 时会重复写吗？读 `store_tile` 相关源码，说明 CK-Tile 如何处理复制（R）维 / 被归约维。
+1. 为什么 `cols % 4 ≠ 0` 时声明向量长度 4 会出错？（提示：一个从 4 的倍数列开始的向量，在 `cols % 4 ≠ 0` 时会不会伸进下一行？pad 判断有效性时看的是向量的哪个元素？在 gfx942 上行首不对齐并不会读错，讲义 §3.4 有实测；对齐只是在别的硬件上可能出现的额外问题。）
+2. `block_tile_reduce_sync` 之后，同一行的结果被 R 段上的多个 lane 同时持有（你的设计里是几个？）。`store_tile` 时，这些 lane 会不会都去写同一个地址？读源码回答，不要猜：R 维在分布的坐标适配器里是哪种变换、它对算出的 X 坐标有没有贡献（`core/tensor/tile_distribution.hpp` 第 285–292 行，`replicate` 变换的定义在 `core/algorithm/coordinate_transform.hpp`）；`store_tile`（`core/tensor/store_tile.hpp`）→ `tile_window.hpp` 的 `store()` 这条路径上，有没有任何按 R 坐标筛选写入者的逻辑？再设计一个小实验验证结论（提示：sync 之后、store 之前，给每个 lane 的值加上一个与 lane id 有关的标记，看最后留在内存里的是谁的值）。最后说明：为什么这样写在本作业里是无害的，又为什么 sync 必须放在 store 之前。
 3. 如果要支持一行跨 warp（例如 cols 很大而 rows 很小），需要额外做什么？（提示：跨 warp 归约要经过 LDS，类似 Lab 1 a3。）
 4. 设计说明：用 3–5 句话写下你的 block 形状、每 block 行数、tile 宽度、Y 维划分、向量长度的选择和理由。
 

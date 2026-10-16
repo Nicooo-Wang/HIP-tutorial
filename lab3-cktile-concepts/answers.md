@@ -68,17 +68,23 @@
 
 ## a3 row-sum（a3-row-sum/README.md）
 
-### 1. 为什么 `cols % 4 ≠ 0` 时声明向量长度 4 会出错？（提示：每行起始地址的对齐。）
+### 1. 为什么 `cols % 4 ≠ 0` 时声明向量长度 4 会出错？
 
-- 出错的机制（讲义 §3.4；引用 `buffer_view.hpp` 或 `coordinate_transform.hpp` 的相关行）：
+提示：一个从 4 的倍数列开始的向量会不会伸进下一行？pad 判断有效性时看的是向量的哪个元素？在 gfx942 上行首不对齐并不会读错（讲义 §3.4 实测），对齐只是在别的硬件上可能出现的额外问题。
+
+- 出错的机制（讲义 §3.4；引用 `/opt/rocm/include/ck_tile/core/tensor/buffer_view.hpp` 或 `/opt/rocm/include/ck_tile/core/algorithm/coordinate_transform.hpp` 的相关行）：
+- 为什么最后一行反而可能是对的：
 - 你的实测（可选：临时把分派条件去掉、总是走向量 4，跑 `make run A=a3 CASE=ragged_cols`，记下首个错误）：
 
 （在此作答）
 
-### 2. `block_tile_reduce_sync` 之后，同一行的 64 个 lane 都持有结果，`store_tile` 时会重复写吗？读 `store_tile` 相关源码，说明 CK-Tile 如何处理复制（R）维 / 被归约维。
+### 2. `block_tile_reduce_sync` 之后，同一行的结果被 R 段上的多个 lane 同时持有。`store_tile` 时，这些 lane 会不会都去写同一个地址？
 
-- 追踪路径（`store_tile.hpp` → `tile_window.hpp` 的 `store` → …，写出文件:行号）：
-- 结论：
+- 你的设计里，一行的结果被几个 lane 持有：
+- R 维在分布的坐标适配器里是哪种变换，它对 X 坐标有没有贡献（`core/tensor/tile_distribution.hpp` 第 285–292 行、`core/algorithm/coordinate_transform.hpp` 的 `replicate`）：
+- 追踪写路径（`store_tile.hpp` → `tile_window.hpp` 的 `store()` → …，写出文件:行号），其中有没有按 R 坐标筛选写入者的逻辑：
+- 验证实验与结果（给每个 lane 的值加一个与 lane id 有关的标记）：
+- 结论：为什么在本作业里无害；为什么 sync 必须在 store 之前：
 
 （在此作答）
 
