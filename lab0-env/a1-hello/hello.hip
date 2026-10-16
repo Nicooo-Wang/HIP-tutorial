@@ -6,7 +6,7 @@
 // 每个 GPU 线程负责 out 中的（至多）一个元素。
 __global__ void fill_ids_kernel(int* out, int n) {
   // TODO(a1-1): 计算本线程负责的全局下标 i，并在 i < n 时写 out[i] = i（讲义 §3.2）
-  //   提示：全局下标 = blockIdx.x * blockDim.x + threadIdx.x
+  //   提示：要用到 blockIdx.x、blockDim.x、threadIdx.x 三个内置变量（讲义 §3.2 的“楼与房间”类比）
   // >>> 你的代码 <<<
 }
 

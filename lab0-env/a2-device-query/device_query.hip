@@ -34,10 +34,10 @@ DeviceSummary query_device(int device) {
   // TODO(a2-5): lds_bytes_per_block —— 查询属性 hipDeviceAttributeMaxSharedMemoryPerBlock（讲义 §5.2）
   // >>> 你的代码 <<<
 
-  // TODO(a2-6): global_mem_bytes —— 读 hipDeviceProp_t 的成员 totalGlobalMem（单位：字节）（讲义 §5.1）
+  // TODO(a2-6): global_mem_bytes —— 读 a2-1 中取得的 hipDeviceProp_t（prop）的成员 totalGlobalMem（单位：字节）（讲义 §5.1）
   // >>> 你的代码 <<<
 
-  // TODO(a2-7): clock_mhz —— 查询属性 hipDeviceAttributeClockRate（单位 kHz），再换算成 MHz（讲义 §5.2）
+  // TODO(a2-7): clock_mhz —— 查询属性 hipDeviceAttributeClockRate（单位 kHz），再换算成 MHz：kHz ÷ 1000（讲义 §5.2）
   // >>> 你的代码 <<<
 
   return s;

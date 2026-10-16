@@ -28,7 +28,7 @@ make grade A=a1                       # 判分
 make run A=a1 CASE=many_blocks        # 只运行一个用例，看原始输出
 ```
 
-测试先把 `out` 全部填成 `-1`，调用你的 `launch_fill_ids`，再逐个元素比对，最后检查 `out` 前后各 4096 字节的哨兵区是否被改写（讲义 §1.3）。
+测试先把 `out` 全部填成 `-1`，调用你的 `launch_fill_ids`，再逐个元素比对，最后检查 `out` 前后各 256 KiB 的哨兵区是否被改写（讲义 §1.3）。
 
 | 用例 | 分值 | 检查什么 |
 |------|------|----------|
@@ -49,8 +49,8 @@ make run A=a1 CASE=many_blocks        # 只运行一个用例，看原始输出
 
 <details><summary>Hint 2（关键步骤）</summary>
 
-- a1-1：用 `blockIdx.x`、`blockDim.x`、`threadIdx.x` 算出全局下标 i（讲义 §3.2 的公式）；只有当 i 小于 n 时才写 `out[i]`，否则什么都不做。
-- a1-2：grid 是 n 除以 block 大小**向上取整**。C++ 整数除法向下取整，要用讲义 §3.3 的“先给分子加上除数减一”的技巧。检查：n = 1 时 grid 应为 1，n = 256 时为 1，n = 257 时为 2。
+- a1-1：第 0 号 block 的线程负责元素 0..255，第 1 号 block 负责 256..511……照这个规律，第 `b` 号 block 的第 `t` 个线程负责哪个元素？`b`、`t` 和 256 分别对应哪个内置变量（讲义 §3.2）？算出下标之后，哪些线程不该写？
+- a1-2：C++ 的 `n / 256` 是向下取整。要让 n = 257 时得到 2、n = 256 时仍得到 1，除法之前应该给 n 加上多少（讲义 §3.3 的两条判断标准）？写完后用 n = 1、256、257、4194307 心算一遍。
 
 </details>
 
@@ -61,5 +61,9 @@ make run A=a1 CASE=many_blocks        # 只运行一个用例，看原始输出
 
 ## 动手探索（不判分）
 
-- 用 `rocprofv3 --kernel-trace -- ./build/run-a1` 看 kernel 名字与耗时（先 `make run A=a1` 生成 `build/run-a1`；完整命令与输出说明见讲义 §6.3）。在 `kernel_trace.csv` 里找到 `many_blocks` 那次启动，它的 `Grid_Size_X` 是多少？和你算的 grid 是什么关系？
-- 临时把 block 大小从 256 改成 2048，运行 `make run A=a1`，看看报什么错（讲义 §4.2）。试完记得改回来。
+- 用 rocprofv3 看 kernel 名字与耗时（先 `make run A=a1` 生成 `build/run-a1`；输出说明见讲义 §6.3）：
+  ```bash
+  rocprofv3 --kernel-trace --stats --output-format csv -d prof -o a1 -- ./build/run-a1
+  ```
+  `--output-format csv` 不能省（否则只生成一个 `.db` 数据库文件）。打开 `prof/a1_kernel_trace.csv`，找到 `many_blocks` 那次启动——trace 里没有用例名，要靠 `Grid_Size_X` 认出它：它是多少？和你算的 grid 是什么关系？
+- 临时把 block 大小从 256 改成 2048，运行 `make run A=a1`，看看报什么错（讲义 §4.2；输出里的 `invalid configuration argument` 就是 `hipErrorInvalidConfiguration` 的文字说明）。试完记得改回来。
