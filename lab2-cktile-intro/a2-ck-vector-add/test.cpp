@@ -20,7 +20,9 @@ TEST_CASE(tiny, 2)            { run(R, 1, 3); run(R, 3, 4); run(R, 64, 5); }
 TEST_CASE(ragged, 3)          { run(R, 1023, 6); run(R, 4097, 7); run(R, 1000003, 8); }
 TEST_CASE(large, 1)           { run(R, (1 << 24) + 5, 9); }
 
-constexpr double kAddRatio = 0.64;  // 校准：参考答案 ≥1.45×拷贝带宽，kVec=1 的写法 ≥0.84×，单 block 慢版本 ≈0.013×
+// 校准（比值 = 带宽 / 同进程实测 D2D 拷贝带宽，GPU 1、5 各 4 次）：参考答案 S_min = 1.45；单 block 慢版本 N_max = 0.013；
+// 其他合理写法最低：kVec=1 为 0.84，kVec=2 为 1.17，kWarps=1/2 超过 1.8。0.55 使 kVec=1 留 1.5× 余量、参考答案 2.6×、慢版本 42×。
+constexpr double kAddRatio = 0.55;
 PERF_CASE(bandwidth, 2) {
   int n = 1 << 26;
   size_t bytes = size_t(n) * sizeof(float);
