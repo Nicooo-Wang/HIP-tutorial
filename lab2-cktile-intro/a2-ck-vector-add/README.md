@@ -62,7 +62,7 @@ make run A=a2 CASE=one_tile              # 只运行一个用例，看原始输�
 
 - a2-1：`va` 的每个参数含义见讲义 §3.1；`vb`、`vc` 只是换了指针。`c` 是要写的数组，视图类型和只读的一样吗？
 - a2-2：encoding 的 6 个模板参数依次是 R、H、P→X、P→H 段、Y→X、Y→H 段（讲义 §3.2）。本题没有复制维；H 里要放几段？**P 维要写几个？** 读 CK-Tile 源码 `/opt/rocm/include/ck_tile/core/tensor/tile_distribution.hpp` 第 97–105 行：当 P 维的个数是 1 个和 2 个时，线程分别用什么来决定自己是谁？对照 block 里有 4 个 wavefront 这件事，想想该选哪种。
-- a2-3：窗口的“长度”参数是编译期常量，“原点”是运行期值；`blockIdx.x` 的类型是 unsigned，直接参与乘法会遇到什么编译错误？CLAUDE.md 与讲义 §3.3 都有提示。
+- a2-3：窗口的“长度”参数是编译期常量，“原点”是运行期值；`blockIdx.x` 的类型是 unsigned，直接参与乘法会遇到什么编译错误？讲义 §3.3 有提示。
 - a2-4：`load_tile` 返回的对象怎么按元素读写？输出 tile 需要先用与输入相同的分布创建出来（讲义 §3.4）；`sweep_tile` 的回调参数是什么，怎样既读 `ta`、`tb` 又写 `tc`？
 
 </details>
