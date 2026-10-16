@@ -24,7 +24,7 @@ constexpr auto add_numbers = [](auto a, auto b) { /* ... */ };                  
 
 每个 TODO 上方都有一个“同类但不同”的小例子，照着它改写即可。
 
-**编译失败时先看是否丢了 `constexpr`。** 测试里有 `constexpr index_t a = product(...)` 这类编译期调用，如果你把函数改成了非 `constexpr`，整个测试会编译失败、得 0 分，并显示编译错误。这是有意设计：CK-Tile 里非 `constexpr` 的函数同样无法用在模板参数里。同理，`row_major_strides` 的返回类型如果不是 `ck_tile::array<index_t, N>`，测试里的 `static_assert` 会让整个测试文件编译失败。
+**编译失败时先看是否丢了 `constexpr`。** 测试里有 `constexpr index_t a = product(...)` 这类编译期调用，如果你把 E1、E2、E4、E5 的函数改成了非 `constexpr`，整个测试会编译失败、得 0 分，并显示编译错误（E3 是 `__device__` 函数，不涉及；E6 的 lambda 从 C++17 起本来就隐式 `constexpr`，去掉关键字也照样编译，但请保留骨架的写法）。这是有意设计：CK-Tile 里非 `constexpr` 的函数同样无法用在模板参数里。同理，`row_major_strides` 的返回类型如果不是 `ck_tile::array<index_t, N>`，测试里的 `static_assert` 会让整个测试文件编译失败。
 
 ## 怎么判分
 
@@ -40,9 +40,9 @@ make run A=a1 CASE=e2_row_major_strides  # 只运行一个用例，看原始输�
 | `e1_product` | 2 | `<2,3,4>` 为 24；空 sequence 为 1；单元素 |
 | `e2_row_major_strides` | 3 | 返回类型是 `array<index_t, N>`；`<4,8,2>`、`<5>`、`<3,1,7,2>`（含长度为 1 的维度） |
 | `e3_static_for_device` | 2 | 设备端 `fill_squares<8>` 与 `<1>`，并检查没有越界写 |
-| `e4_if_constexpr` | 2 | float=4、half=8、int8=16、double=2 |
-| `e5_tuple_sum` | 2 | 异构 tuple `(1, 2.5f, 3.0)` 的和；单元素 tuple |
-| `e6_compile_time_lambda` | 2 | 返回类型必须是 `number<7>`、`number<-5>`（值在类型里） |
+| `e4_if_constexpr` | 2 | float=4、half=8、int8=16、double=2；bf16=8、int32=4、int64=2 |
+| `e5_tuple_sum` | 2 | 异构 tuple `(1, 2.5f, 3.0)` 的和；单元素 tuple；`(1e-9, 1.0, 1e-9)`、`(0.1, 0.2)` 检查全程用 double 计算 |
+| `e6_compile_time_lambda` | 2 | 返回类型必须是 `number<7>`、`number<-5>`、`number<11>` 等（值在类型里；含负数与 0） |
 
 ## Hints
 

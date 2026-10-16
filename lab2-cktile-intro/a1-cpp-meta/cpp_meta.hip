@@ -1,5 +1,6 @@
 // Lab 2 · a1 cpp-meta：读懂 CK-Tile 所需的 C++（constexpr、变参模板、number、sequence、tuple、static_for、if constexpr、泛型 lambda）
-// 所有函数都必须保持 constexpr（E3 的 __device__ 函数除外）：测试里会在编译期调用它们，丢掉 constexpr 整个测试会编译失败。
+// E1、E2、E4、E5 必须保持 constexpr：测试里会在编译期调用它们，丢掉 constexpr 整个测试会编译失败。
+// （E3 是 __device__ 函数；E6 的 lambda 从 C++17 起本来就隐式 constexpr，保留骨架里的写法即可。）
 // 判分：在 lab2-cktile-intro/ 目录下运行 make grade A=a1；调试：make run A=a1 CASE=用例名
 #include <hip/hip_runtime.h>
 #include "ck_tile/core.hpp"
@@ -42,8 +43,9 @@ __device__ void fill_squares(float* out) {
 }
 
 // ---------------- E4：if constexpr ----------------
-// 一次 16 字节向量访存能装多少个 T：float=4、half_t=8、int8_t=16；double 特殊返回 2。
-// TODO(a1-E4): 用 if constexpr 区分 double 与其它类型（讲义 §2.4）
+// 一次 16 字节向量访存能装多少个 T：float=4、half_t=8、bf16_t=8、int8_t=16、int32_t=4、double=2。
+// TODO(a1-E4): 用 if constexpr 让 double 单独走一个分支、直接返回 2，其它类型按公式计算（讲义 §2.4）
+//   （double 这个分支只是为了练习 if constexpr 的写法。想一想：去掉它，double 的结果会变吗？）
 //   同类例子（数据类型是否为浮点，选不同返回值）：
 //     if constexpr (std::is_floating_point_v<T>) return 1; else return 0;
 //   if constexpr 的分支在编译期选择，没被选中的分支不会被实例化。

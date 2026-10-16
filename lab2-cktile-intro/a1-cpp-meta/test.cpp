@@ -1,6 +1,7 @@
 #include "harness.hpp"
 #include STUDENT_SRC
 #include <type_traits>
+#include <cmath>
 using namespace ck_tile;
 
 __global__ void squares_kernel8(float* o) { fill_squares<8>(o); }
@@ -39,12 +40,20 @@ TEST_CASE(e4_if_constexpr, 2) {
   constexpr index_t f = vec16<float>(), h = vec16<half_t>(), i8 = vec16<int8_t>(), d = vec16<double>();
   if (f != 4 || h != 8 || i8 != 16 || d != 2)
     hk::fail(R, "期望 float=4 half=8 int8=16 double=2，得到 %d %d %d %d", f, h, i8, d);
+  constexpr index_t bf = vec16<bf16_t>(), i32 = vec16<int32_t>(), i64 = vec16<int64_t>();
+  if (bf != 8 || i32 != 4 || i64 != 2)
+    hk::fail(R, "期望 bf16_t=8 int32_t=4 int64_t=2，得到 %d %d %d", bf, i32, i64);
 }
 
 TEST_CASE(e5_tuple_sum, 2) {
   constexpr double s = tuple_sum(make_tuple(1, 2.5f, 3.0));
   if (s != 6.5) hk::fail(R, "(1, 2.5f, 3.0) 之和期望 6.5，得到 %g", s);
   if (tuple_sum(make_tuple(int8_t(-3))) != -3.0) hk::fail(R, "单元素 tuple 求和错误");
+  // 精度：必须全程用 double。float 累加器或先把元素转成 float 都会在这里差出 1e-9 量级
+  const double p = tuple_sum(make_tuple(1e-9, 1.0, 1e-9)), pe = (1e-9 + 1.0) + 1e-9;
+  if (std::fabs(p - pe) > 1e-12) hk::fail(R, "(1e-9, 1.0, 1e-9) 之和期望 %.12f，得到 %.12f（是否全程用 double 计算？）", pe, p);
+  const double q = tuple_sum(make_tuple(0.1, 0.2)), qe = 0.1 + 0.2;
+  if (std::fabs(q - qe) > 1e-12) hk::fail(R, "(0.1, 0.2) 之和期望 %.17g，得到 %.17g（是否全程用 double 计算？）", qe, q);
 }
 
 TEST_CASE(e6_compile_time_lambda, 2) {
@@ -52,5 +61,11 @@ TEST_CASE(e6_compile_time_lambda, 2) {
   if (!std::is_same_v<T, number<7>>) hk::fail(R, "add_numbers(number<3>, number<4>) 的类型应为 number<7>，结果需在类型中");
   using U = decltype(add_numbers(number<0>{}, number<-5>{}));
   if (!std::is_same_v<U, number<-5>>) hk::fail(R, "add_numbers(number<0>, number<-5>) 应为 number<-5>");
+  if (!std::is_same_v<decltype(add_numbers(number<5>{}, number<6>{})), number<11>>)
+    hk::fail(R, "add_numbers(number<5>, number<6>) 应为 number<11>");
+  if (!std::is_same_v<decltype(add_numbers(number<-2>{}, number<-3>{})), number<-5>>)
+    hk::fail(R, "add_numbers(number<-2>, number<-3>) 应为 number<-5>");
+  if (!std::is_same_v<decltype(add_numbers(number<7>{}, number<0>{})), number<7>>)
+    hk::fail(R, "add_numbers(number<7>, number<0>) 应为 number<7>");
 }
 HK_MAIN()
