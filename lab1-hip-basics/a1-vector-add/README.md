@@ -35,10 +35,12 @@ make run A=a1 CASE=saxpy_needs_stride # 只运行一个用例，看原始输出
 | `add_small` | 1 | n = 1 与 n = 7：比一个 block 还少 |
 | `add_block_exact` | 1 | n = 1024：恰好整除 |
 | `add_ragged` | 2 | n = 1023 与 100003：不整除，最后一个 block 不满，不能越界 |
-| `add_large` | 2 | n = 2²⁴ + 1：大数组，且结果必须逐位等于 CPU 的 float 加法 |
+| `add_large` | 2 | n = 2²⁴ + 3：大数组，且结果必须逐位等于 CPU 的 float 加法 |
 | `saxpy_fits_grid` | 1 | n = 160 × 256：恰好一线程一元素 |
 | `saxpy_small` | 1 | n = 5：线程远多于元素 |
 | `saxpy_needs_stride` | 3 | n = 160 × 256 × 37 + 11：每个线程要处理 37~38 个元素 |
+
+三个 saxpy 用例都依次用 alpha = 1.75、−0.5、0 各跑一遍，并检查输入 x 没有被修改。
 
 读失败信息：期望值与“得到 NaN”表示该元素没有任何线程写过（c 初始填的是 NaN）；“越界写”表示写到了数组外的哨兵区。
 
