@@ -47,9 +47,8 @@ HIP-tutorial/
 │   │   ├── <name>.hip        # 学生编辑的文件（挖空）
 │   │   ├── test.cpp          # 判分测试（学生不改）
 │   │   ├── README.md         # 任务、Hints（分级）、书面问题
-│   │   └── mutants/          # 故意写错的变体，verify 时必须 FAIL
 │   └── answers.md            # 书面问题作答（不判分）
-└── solutions/labN-<name>/aK-<name>/<name>.hip   # 参考答案（仓库内，用户自律不偷看）
+└── solutions/labN-<name>/aK-<name>/{<name>.hip, mutants/*.hip}   # 参考答案与 mutants（mutants 不进学生目录，避免泄露答案）
 ```
 
 ## 4. Assignment 设计
