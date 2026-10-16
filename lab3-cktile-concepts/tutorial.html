@@ -69,7 +69,8 @@ pre.out { font-size: .8125rem; }
 <p>先固定几个词。一个描述符可以看成一张自上而下的“翻译流水线”：</p>
 <ul>
   <li><strong>上层维度（top / upper）</strong>：你拿来索引的逻辑坐标，例如矩阵的 (i, j)。<code>get_num_of_top_dimension()</code> 返回它有几维。</li>
-  <li><strong>下层维度（lower）</strong>：某个变换算出来、交给下一层的坐标。流水线中间那些既不是最上层、也不是最底层的维度叫<strong>隐藏维度</strong>（hidden），源码里大量的 <code>hidden_ids</code> 指的就是它们。</li>
+  <li><strong>下层维度（lower）</strong>：某个变换算出来、交给下一层的坐标。</li>
+  <li><strong>hidden 维度</strong>：adaptor 把流水线里出现的<em>每一个</em>维度（最上层、中间层、最底层）统一编号，这个编号叫 hidden id，源码里大量的 <code>hidden_ids</code> 指的就是它。上层维度、底层维度各自是其中的一个子集（<code>tensor_adaptor.hpp</code> 的 <code>get_top_dimension_hidden_ids()</code> / <code>get_bottom_dimension_hidden_ids()</code> 返回的就是它们的编号）。</li>
   <li><strong>最底层</strong>只有一维：线性偏移（以元素为单位，不是字节）。</li>
 </ul>
 <p>每个坐标变换都知道“给我上层坐标，我算出下层坐标”——源码里统一叫 <code>calculate_lower_index(idx_low, idx_up)</code>。<code>calculate_offset</code> 就是把上层坐标从顶到底依次喂给每个变换，最后取最底层那一维：</p>
@@ -79,7 +80,7 @@ CK_TILE_HOST_DEVICE constexpr index_t calculate_offset(const Idx&amp; idx) const
 {
     return Base::calculate_bottom_index(idx)[number&lt;0&gt;{}];
 }</code></pre>
-  <p><code>Base</code> 是 <code>tensor_adaptor</code>——一个“只做坐标翻译、不管内存”的对象。描述符 = adaptor + 元素空间大小（<code>get_element_space_size()</code>，§1.2）。</p>
+  <p><code>Base</code> 是 <code>tensor_adaptor</code>——一个“只做坐标翻译、不管内存”的对象。描述符 = adaptor + 元素空间大小（<code>get_element_space_size()</code>，§1.2）+ 最内维的“向量长度承诺”（模板参数 <code>GuaranteedVectorLengths</code> / <code>GuaranteedVectorStrides</code>，§1.2 末尾与 §3.4）。</p>
 </div>
 <figure class="diagram">
   <svg viewBox="0 0 640 262" role="img" aria-labelledby="fig11-t">
@@ -103,7 +104,7 @@ CK_TILE_HOST_DEVICE constexpr index_t calculate_offset(const Idx&amp; idx) const
       <path d="M320 52 V82"/><path d="M320 124 V154"/><path d="M320 196 V220"/>
     </g>
     <g font-size="11.5" style="fill:var(--d-muted)">
-      <text x="332" y="72">隐藏维度</text><text x="332" y="144">隐藏维度</text>
+      <text x="332" y="72">中间维度</text><text x="332" y="144">中间维度</text>
     </g>
     <g font-size="11.5">
       <text x="500" y="70">每一层：</text>
@@ -214,19 +215,20 @@ CK_TILE_HOST_DEVICE static constexpr void calculate_lower_index(LowIdx&amp; idx_
 <p>“原样传下去”怎么能改变布局？关键在第 3、4 个参数：变换 k 从旧的第 a 维拿坐标、却挂到新的第 b 维上。a ≠ b 时，维度就换了位置。下面把 §1.2 的三维张量 (a, b, c) 改成以 (c, a, b) 为上层坐标的视图：</p>
 <pre data-snip="s1_3"><code class="language-cpp">// 底座：上一段的 d3，维度记作 (a, b, c)，长度 (2, 3, 4)
 // 目标：新视图的上层坐标是 (c, a, b)，即把最后一维挪到最前面
+// 写法：按“新上层的顺序”列出变换——变换 k 就产出新第 k 维，置换写在第 3 个参数里
 constexpr auto cab = transform_tensor_descriptor(
     d3,                                                    // ① 底座（旧描述符）
-    make_tuple(make_pass_through_transform(number&lt;2&gt;{}),   // ② 变换列表：变换 0 管 a
-               make_pass_through_transform(number&lt;3&gt;{}),   //              变换 1 管 b
-               make_pass_through_transform(number&lt;4&gt;{})),  //              变换 2 管 c
-    make_tuple(sequence&lt;0&gt;{}, sequence&lt;1&gt;{}, sequence&lt;2&gt;{}),   // ③ 变换 k 吃旧上层的哪些维度
-    make_tuple(sequence&lt;1&gt;{}, sequence&lt;2&gt;{}, sequence&lt;0&gt;{}));  // ④ 变换 k 产出新上层的哪些维度
+    make_tuple(make_pass_through_transform(number&lt;4&gt;{}),   // ② 变换列表：变换 0 管 c（长度 4）
+               make_pass_through_transform(number&lt;2&gt;{}),   //              变换 1 管 a（长度 2）
+               make_pass_through_transform(number&lt;3&gt;{})),  //              变换 2 管 b（长度 3）
+    make_tuple(sequence&lt;2&gt;{}, sequence&lt;0&gt;{}, sequence&lt;1&gt;{}),   // ③ 变换 k 吃旧上层的哪些维度：c、a、b
+    make_tuple(sequence&lt;0&gt;{}, sequence&lt;1&gt;{}, sequence&lt;2&gt;{}));  // ④ 变换 k 产出新上层的哪些维度
 
 static_assert(cab.get_length(number&lt;0&gt;{}) == 4);           // 新的第 0 维是 c，长度 4
 static_assert(cab.calculate_offset(make_tuple(3, 1, 2)) == 1 * 12 + 2 * 4 + 3);   // (c,a,b)=(3,1,2)</code></pre>
 <figure class="diagram">
   <svg viewBox="0 0 640 246" role="img" aria-labelledby="fig13-t">
-    <title id="fig13-t">transform_tensor_descriptor 的数据流：三个 pass_through 分别吃旧上层的第 0、1、2 维，产出新上层的第 1、2、0 维</title>
+    <title id="fig13-t">transform_tensor_descriptor 的数据流：三个 pass_through 分别吃旧上层的第 2、0、1 维，产出新上层的第 0、1、2 维</title>
     <defs><marker id="arr13" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--d-muted)"/></marker></defs>
     <text x="10" y="22" font-size="12" font-weight="700">新上层</text>
     <text x="10" y="38" font-size="11" style="fill:var(--d-muted)">参数 ④</text>
@@ -247,22 +249,23 @@ static_assert(cab.calculate_offset(make_tuple(3, 1, 2)) == 1 * 12 + 2 * 4 + 3); 
     </g>
     <g font-size="12" text-anchor="middle">
       <text x="205" y="32" font-weight="700">新第 0 维：c</text><text x="355" y="32" font-weight="700">新第 1 维：a</text><text x="505" y="32" font-weight="700">新第 2 维：b</text>
-      <text x="205" y="121">变换 0</text><text x="205" y="136" class="mono" font-size="11">pass_through(2)</text>
-      <text x="355" y="121">变换 1</text><text x="355" y="136" class="mono" font-size="11">pass_through(3)</text>
-      <text x="505" y="121">变换 2</text><text x="505" y="136" class="mono" font-size="11">pass_through(4)</text>
+      <text x="205" y="121">变换 0</text><text x="205" y="136" class="mono" font-size="11">pass_through(4)</text>
+      <text x="355" y="121">变换 1</text><text x="355" y="136" class="mono" font-size="11">pass_through(2)</text>
+      <text x="505" y="121">变换 2</text><text x="505" y="136" class="mono" font-size="11">pass_through(3)</text>
       <text x="205" y="214" font-weight="700">旧第 0 维：a</text><text x="355" y="214" font-weight="700">旧第 1 维：b</text><text x="505" y="214" font-weight="700">旧第 2 维：c</text>
     </g>
     <g stroke="var(--d-muted)" stroke-width="1.5" fill="none" marker-end="url(#arr13)">
-      <path d="M205 104 L353 47"/><path d="M355 104 L503 47"/><path d="M505 104 L207 47"/>
-      <path d="M205 190 V144"/><path d="M355 190 V144"/><path d="M505 190 V144"/>
+      <path d="M205 104 V47"/><path d="M355 104 V47"/><path d="M505 104 V47"/>
+      <path d="M505 190 L207 145"/><path d="M205 190 L353 145"/><path d="M355 190 L503 145"/>
     </g>
     <g font-size="10.5" class="mono" style="fill:var(--d-4)">
-      <text x="10" y="56">④：1, 2, 0</text>
-      <text x="10" y="238">③：0, 1, 2</text>
+      <text x="10" y="56">④：0, 1, 2</text>
+      <text x="10" y="238">③：2, 0, 1</text>
     </g>
   </svg>
   <figcaption><b>图 1.3</b>箭头表示“接线”：第 3 个参数决定每个变换的“脚”插在旧上层的哪一维，第 4 个参数决定它的“头”顶在新上层的哪一维（图中左侧按变换 0、1、2 的顺序列出这两组编号）。求偏移时，坐标沿箭头的<em>反方向</em>从新上层流回旧上层。变换在列表里的顺序本身不重要，重要的是这两组编号。</figcaption>
 </figure>
+<p>同一个置换还有另一种写法：按<em>旧</em>维度的顺序列出变换（长度依次 2、3、4），第 3 个参数写成 0、1、2，把置换放进第 4 个参数。两种写法得到的描述符完全相同，但要注意第 3 个参数记的是“从哪来”、第 4 个参数记的是“到哪去”，同一个置换在两处写出来的数字一般<strong>不一样</strong>。自己练一下：把 <code>cab</code> 改成第二种写法，第 4 个参数应该是什么？写出来后用 <code>static_assert</code> 核对 (3, 1, 2) 的偏移。</p>
 <p>读这类代码的口诀：<strong>按列表下标 k 竖着读三样东西</strong>——变换 k、它吃的旧维度、它产出的新维度。新描述符每一维的长度也由变换给出（<code>pass_through</code> 的长度就是它的参数），所以上面 <code>cab.get_length(number&lt;0&gt;{})</code> 是 4。</p>
 <div class="callout pitfall" data-title="三种写错的方式，只有两种会报错（本机实测）">
   <ul>
@@ -294,37 +297,38 @@ static_assert(cab.calculate_offset(make_tuple(3, 1, 2)) == 1 * 12 + 2 * 4 + 3); 
 }</code></pre>
   <p><code>low_lengths_scan_[i]</code> 是第 i 维<em>之后</em>所有长度之积（“反向排他前缀积”）。例如长度 (3, 4)：scan = (4, 1)，k = 7 → (7 / 4, 7 % 4) = (1, 3)。我们调用的 <code>make_merge_transform</code>（第 1614–1618 行）默认返回另一个实现 <code>merge_v2_magic_division</code>，结果完全相同，只是用“乘一个魔数再移位”代替了整数除法——GPU 上整数除法很贵。</p>
 </div>
-<pre data-snip="s1_4"><code class="language-cpp">// (a, b, c) → (a, k)：把后两维合成一维 k，k = b·4 + c
-constexpr auto a_k = transform_tensor_descriptor(
+<pre data-snip="s1_4"><code class="language-cpp">// (a, b, c) → (k, b)：把不相邻的 a、c 两维合成一维 k，b 原样留下
+// a 当高位、c 当低位：k = a·4 + c
+constexpr auto k_b = transform_tensor_descriptor(
     d3,
-    make_tuple(make_pass_through_transform(number&lt;2&gt;{}),
-               make_merge_transform(make_tuple(number&lt;3&gt;{}, number&lt;4&gt;{}))),   // 长度按“高位在前”
-    make_tuple(sequence&lt;0&gt;{}, sequence&lt;1, 2&gt;{}),     // merge 吃旧的第 1、2 维
-    make_tuple(sequence&lt;0&gt;{}, sequence&lt;1&gt;{}));       // 只产出新的第 1 维
-static_assert(a_k.get_num_of_top_dimension() == 2);
-static_assert(a_k.get_length(number&lt;1&gt;{}) == 12);
-static_assert(a_k.calculate_offset(make_tuple(1, 5)) == 17);   // k=5 → (b,c)=(1,1) → 12+4+1
+    make_tuple(make_merge_transform(make_tuple(number&lt;2&gt;{}, number&lt;4&gt;{})),   // 长度按“高位在前”：(a, c)
+               make_pass_through_transform(number&lt;3&gt;{})),
+    make_tuple(sequence&lt;0, 2&gt;{}, sequence&lt;1&gt;{}),     // merge 吃旧的第 0、2 维；b 是旧的第 1 维
+    make_tuple(sequence&lt;0&gt;{}, sequence&lt;1&gt;{}));       // merge 只产出新的第 0 维，b 去新的第 1 维
+static_assert(k_b.get_num_of_top_dimension() == 2);
+static_assert(k_b.get_length(number&lt;0&gt;{}) == 8);
+static_assert(k_b.calculate_offset(make_tuple(5, 1)) == 17);   // k=5 → (a,c)=(1,1) → 12+4+1
 
-// 同样两维，换个顺序合并：c 当高位、b 当低位，k = c·3 + b
-constexpr auto a_k2 = transform_tensor_descriptor(
+// 同样两维，换个顺序合并：c 当高位、a 当低位，k = c·2 + a
+constexpr auto k_b2 = transform_tensor_descriptor(
     d3,
-    make_tuple(make_pass_through_transform(number&lt;2&gt;{}),
-               make_merge_transform(make_tuple(number&lt;4&gt;{}, number&lt;3&gt;{}))),
-    make_tuple(sequence&lt;0&gt;{}, sequence&lt;2, 1&gt;{}),     // 先列出的（c）是高位
+    make_tuple(make_merge_transform(make_tuple(number&lt;4&gt;{}, number&lt;2&gt;{})),
+               make_pass_through_transform(number&lt;3&gt;{})),
+    make_tuple(sequence&lt;2, 0&gt;{}, sequence&lt;1&gt;{}),     // 先列出的（c）是高位
     make_tuple(sequence&lt;0&gt;{}, sequence&lt;1&gt;{}));
-static_assert(a_k2.calculate_offset(make_tuple(0, 1)) == 4);   // k=1 → (c,b)=(0,1) → 4</code></pre>
-<p>本机打印两种合并方式下 k = 0…11 的偏移（a 固定为 0）：</p>
+static_assert(k_b2.calculate_offset(make_tuple(1, 0)) == 12);   // k=1 → (c,a)=(0,1) → 12</code></pre>
+<p>本机打印两种合并方式下 k = 0…7 的偏移（b 固定为 0）：</p>
 <div class="table-wrap">
 <table class="facts grid">
-  <caption>同样合并 (b, c)，高低位的顺序决定了 k 的走法</caption>
-  <thead><tr><th>k</th><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td><td>7</td><td>8</td><td>9</td><td>10</td><td>11</td></tr></thead>
+  <caption>同样合并 (a, c)，高低位的顺序决定了 k 的走法</caption>
+  <thead><tr><th>k</th><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td><td>7</td></tr></thead>
   <tbody>
-    <tr><th><code>a_k</code>（b 高位）</th><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td><td>7</td><td>8</td><td>9</td><td>10</td><td>11</td></tr>
-    <tr><th><code>a_k2</code>（c 高位）</th><td>0</td><td>4</td><td>8</td><td>1</td><td>5</td><td>9</td><td>2</td><td>6</td><td>10</td><td>3</td><td>7</td><td>11</td></tr>
+    <tr><th><code>k_b</code>（a 高位）</th><td>0</td><td>1</td><td>2</td><td>3</td><td>12</td><td>13</td><td>14</td><td>15</td></tr>
+    <tr><th><code>k_b2</code>（c 高位）</th><td>0</td><td>12</td><td>1</td><td>13</td><td>2</td><td>14</td><td>3</td><td>15</td></tr>
   </tbody>
 </table>
 </div>
-<p>第一种按内存顺序走（k 就是 (b, c) 这一片的线性下标）；第二种先走 b 再走 c，等于“按列”遍历这一片。<code>merge</code> 本身不知道内存长什么样，它只负责把一个数拆成几个坐标——偏移是由下面的底座算的。</p>
+<p>两种走法都不是连续的：a、c 中间隔着 b，所以 k 每走过 a 的一步，偏移就跳过一整片 3 × 4 = 12。第一种先走完 c 再走 a（0…3，然后跳到 12…15）；第二种先走 a 再走 c，在 0 与 12 两片之间来回。<code>merge</code> 本身不知道内存长什么样，它只负责把一个数按“高位在前”拆成几个坐标，再按第 3 个参数把它们送回旧上层的对应维度——偏移是由下面的底座算的。</p>
 <p class="sec-assign">对应 a1 的 a1-3（展平）。</p>
 
 <h3 id="s1-5"><span class="sec">§1.5</span><code>unmerge</code> 与分块视图</h3>
@@ -480,22 +484,24 @@ CK_TILE_HOST_DEVICE constexpr void calculate_lower_index(LowIdx&amp; idx_low,
     idx_low(number&lt;1&gt;{}) =
         idx_up[number&lt;1&gt;{}] ^ (idx_up[number&lt;0&gt;{}] % up_lengths_[number&lt;1&gt;{}]);
 }</code></pre>
-  <p>逐项读：下层第 0 维 = 上层第 0 维（原样）；下层第 1 维 = 上层第 1 维 <em>异或</em>（上层第 0 维 mod 第 1 维的长度）。<code>make_xor_transform(make_tuple(长度0, 长度1))</code> 构造它（第 1661–1665 行），<code>up_lengths_</code> 就是你传入的这两个长度。注意被修改的永远是<strong>第二个</strong>分量，用来“打乱它”的是第一个分量——所以谁当第 0 维、谁当第 1 维（即第 3、4 个参数怎么写）决定了“哪一维被打乱”。</p>
+  <p>逐项读：下层第 0 维 = 上层第 0 维（原样）；下层第 1 维 = 上层第 1 维 <em>异或</em>（上层第 0 维 mod 第 1 维的长度）。<code>make_xor_transform(make_tuple(长度0, 长度1))</code> 构造它（第 1661–1665 行），<code>up_lengths_</code> 就是你传入的这两个长度。注意被修改的永远是<strong>第二个</strong>分量，用来“打乱它”的是第一个分量——所以把哪个旧维度排成 xor 的第 0 个分量、哪个排成第 1 个分量（第 3 个参数里 xor 那一项的顺序），决定了“哪一维被打乱”；第 4 个参数则决定这两个分量在新上层排第几（下面的例子会把它们换个位置）。</p>
 </div>
-<p>真实的 kernel 往往一次读 4 个连续 float（16 字节），这时要保证 swizzle 不把这 4 个拆散：只在“4 个一组”的粒度上打乱组号，组内保持连续。下面把每行 16 个 float 看成 4 组 × 4 个，即形状 (i, g, v) = (8, 4, 4)，只对 (i, g) 做 xor：</p>
-<pre data-snip="s1_6"><code class="language-cpp">// 8 行 × 16 个 float，每 4 个 float 一组（一次 16 字节向量访问），即形状 (i, g, v) = (8, 4, 4)
+<p>真实的 kernel 往往一次读 4 个连续 float（16 字节），这时要保证 swizzle 不把这 4 个拆散：只在“4 个一组”的粒度上打乱组号，组内保持连续。下面把每行 16 个 float 看成 4 组 × 4 个，即形状 (i, g, v) = (8, 4, 4)，只对 (i, g) 做 xor；同时让新视图的上层按 (g, i, v) 排列，看清楚“xor 内部谁打乱谁”和“输出挂到新上层第几维”是两件独立的事：</p>
+<pre data-snip="s1_6"><code class="language-cpp">// 8 行 × 16 个 float，每 4 个 float 一组（一次 16 字节向量访问），即底座形状 (i, g, v) = (8, 4, 4)
 constexpr auto base3 = make_naive_tensor_descriptor(
     make_tuple(number&lt;8&gt;{}, number&lt;4&gt;{}, number&lt;4&gt;{}),
     make_tuple(number&lt;16&gt;{}, number&lt;4&gt;{}, number&lt;1&gt;{}));
-// 只在“组”的粒度上做 swizzle：组号 g 换成 g ^ (i % 4)，组内的 4 个元素保持连续
+// 只在“组”的粒度上做 swizzle：组号 g 换成 g ^ (i % 4)，组内的 4 个元素保持连续。
+// 新视图的上层坐标按 (g, i, v) 排列——先组号、再行号
 constexpr auto swizzled = transform_tensor_descriptor(
     base3,
-    make_tuple(make_xor_transform(make_tuple(number&lt;8&gt;{}, number&lt;4&gt;{})),   // 吃 (i, g)，产出 (i, g)
+    make_tuple(make_xor_transform(make_tuple(number&lt;8&gt;{}, number&lt;4&gt;{})),   // xor 的两个分量：(i, g)，g 被打乱
                make_pass_through_transform(number&lt;4&gt;{})),                   // v 原样
-    make_tuple(sequence&lt;0, 1&gt;{}, sequence&lt;2&gt;{}),
-    make_tuple(sequence&lt;0, 1&gt;{}, sequence&lt;2&gt;{}));
-static_assert(swizzled.calculate_offset(make_tuple(5, 2, 3)) == 5 * 16 + (2 ^ (5 % 4)) * 4 + 3);   // = 95</code></pre>
-<p>本机打印每个 (i, g) 的起始偏移（v = 0）。每一行都是 {0, 4, 8, 12} + 16i 的一个排列；而固定 g 往下看（例如 g = 0：0、20、40、60…），组的物理位置在行与行之间来回错开：</p>
+    make_tuple(sequence&lt;0, 1&gt;{}, sequence&lt;2&gt;{}),    // xor 吃旧的 (i, g)
+    make_tuple(sequence&lt;1, 0&gt;{}, sequence&lt;2&gt;{}));   // xor 的输出 (i, g) 依次去新第 1、0 维
+static_assert(swizzled.get_length(number&lt;0&gt;{}) == 4);   // 新第 0 维是 g
+static_assert(swizzled.calculate_offset(make_tuple(2, 5, 3)) == 5 * 16 + (2 ^ (5 % 4)) * 4 + 3);   // (g,i,v)=(2,5,3)，= 95</code></pre>
+<p>xor 内部的两个分量顺序由第 3 个参数决定（这里是旧的 (i, g)，所以 g 被 i 打乱）；第 4 个参数只决定这两个输出各自放到新上层的第几维，不改变谁打乱谁。本机打印每个 (i, g) 的起始偏移（v = 0；调用时写成 <code>swizzled.calculate_offset(make_tuple(g, i, 0))</code>）。每一行都是 {0, 4, 8, 12} + 16i 的一个排列；而固定 g 往下看（例如 g = 0：0、20、40、60…），组的物理位置在行与行之间来回错开：</p>
 <pre class="out"><code class="language-text">i=0:   0   4   8  12        i=4:  64  68  72  76
 i=1:  20  16  28  24        i=5:  84  80  92  88
 i=2:  40  44  32  36        i=6: 104 108  96 100
@@ -629,7 +635,7 @@ thread 127: (30,28) (30,29) (30,30) (30,31) (31,28) (31,29) (31,30) (31,31)</cod
   <ul class="checks" data-role="checks"></ul>
   <svg data-role="svg" viewBox="0 0 640 300" role="img" aria-label="tile 中每个元素按负责它的 wavefront 着色，格内是 lane id"></svg>
   <p class="detail-line" data-role="detail" aria-live="polite"></p>
-  <figcaption><b>小部件 2.1</b>颜色 = 负责该元素的 wavefront，格内小字 = lane id（格子太小时省略），红框 = 当前线程持有的全部元素，其余线程的元素变淡。约定：一个 P 认领多段时，按“X0 的段、X1 的段、R 的段”的顺序从高位到低位拆 lane id（或 warp id）；Y 维按同样的顺序编号为 Y0、Y1…，寄存器下标按 Y 的行主序排列。斜线格 = 没有线程负责；角上的数字 = 被几个线程复制持有（R）。</figcaption>
+  <figcaption><b>小部件 2.1</b>颜色 = 负责该元素的 wavefront，格内小字 = lane id（格子太小时省略），红框 = 当前线程持有的全部元素，其余线程的元素变淡。约定：一个 P 认领多段时，按“X0 的段、X1 的段、R 的段”的顺序从高位到低位拆 lane id（或 warp id）——CK-Tile 里这个顺序由你写的 P→ 列表决定，小部件只能表达按这个顺序列出的写法，§2.2 说的“反过来写”在这里画不出来；Y 维按同样的顺序编号为 Y0、Y1…，寄存器下标按 Y 的行主序排列。斜线格 = 没有线程负责；角上的数字 = 被几个线程复制持有（R）。</figcaption>
 </figure>
 <div class="callout pitfall" data-title="lane 段之积必须是 64">
   <p>CK-Tile 不检查这一条。lane 认领的段之积小于 64 时，多出来的 lane 算出的坐标落在 tile 之外；大于 64 时，有一部分元素永远没有 lane 去拿（lane id 最大只有 63）。两种情况都能编译、能运行，只是静默出错——和 Lab 2 “1 个 P 维用在多 wavefront 上”是同一类坑。在小部件里把某个 lane 段的长度改一下就能看到。</p>
@@ -725,7 +731,7 @@ const auto transforms = generate_tuple(
         return transform;
     },
     number&lt;num_dim&gt;{});</code></pre>
-  <p>三个参数：原视图、tile 各维长度（编译期 <code>number</code>，与窗口长度一致）、每一维要不要 pad（<code>sequence&lt;bool, …&gt;</code>）。坐标本身原样传下去；区别在于 <code>right_pad</code> 会<strong>报告有效性</strong>：</p>
+  <p>三个参数：原视图、tile 各维长度（编译期 <code>number</code>，惯例上写成窗口长度）、每一维要不要 pad（<code>sequence&lt;bool, …&gt;</code>）。坐标本身原样传下去；区别在于 <code>right_pad</code> 会<strong>报告有效性</strong>：</p>
 </div>
 <div class="callout note" data-title="读源码：core/algorithm/coordinate_transform.hpp 第 400–405 行（right_pad）">
 <pre><code class="language-cpp">template &lt;typename UpIdx&gt;
@@ -736,7 +742,7 @@ is_valid_upper_index_mapped_to_valid_lower_index(const UpIdx&amp; idx_up) const
 }</code></pre>
   <p>也就是“这一维的坐标 &lt; 原长度”。访问时，<code>tensor_view.hpp</code> 第 81–90 行的 <code>get_vectorized_elements</code> 把 <code>coordinate_has_valid_offset_assuming_top_index_is_valid(desc_, coord)</code> 作为 is_valid 交给 buffer：它把链上每个“可能无效”的变换的检查与起来。naive 视图只有 <code>embed</code>，它的 <code>is_valid_upper_index_always_mapped_to_valid_lower_index()</code> 返回 true（同文件第 505–509 行），检查在编译期就被删掉——这就是 Lab 2 说“对 naive 视图恒为 true”的出处。</p>
 </div>
-<p>两个使用要点：pad 的长度要与<em>窗口</em>长度一致（窗口越过的部分才需要被判无效）；某一维如果保证是 tile 的整数倍，可以写 <code>false</code> 省掉那一维的检查。</p>
+<p>两个使用要点：有效性只和<strong>原长度</strong>比较——某一维写了 <code>true</code>，这一维坐标 ≥ 原长度的访问就都被判无效，与第二个参数无关（本机实测：把上面 <code>peek</code> 的第二个参数从 (8, 8) 改成 (1, 1)，此时补的长度为 0，输出与 (8, 8) 时完全相同）。第二个参数只决定 pad 后视图的逻辑长度（<code>get_length</code>），惯例上写成 tile 长度，让视图形状是 tile 的整数倍。某一维如果保证是 tile 的整数倍，可以写 <code>false</code> 省掉那一维的检查。</p>
 <p class="sec-assign">对应 a2 的 a2-1（构造 <code>vout</code>），以及 a2 书面问题 1。</p>
 
 <h3 id="s2-4"><span class="sec">§2.4</span>LDS 视图：padding 与“同一块内存的两个视图”</h3>
@@ -754,6 +760,7 @@ is_valid_upper_index_mapped_to_valid_lower_index(const UpIdx&amp; idx_up) const
       smem, make_tuple(number&lt;R / 2&gt;{}, number&lt;C&gt;{}), make_tuple(number&lt;2 * LD&gt;{}, number&lt;1&gt;{}), number&lt;1&gt;{}, number&lt;1&gt;{});
   (void)va; (void)vb;
 }</code></pre>
+<p>图 2.3 还画了第三个视图 <strong>C</strong>：同一块内存的<em>转置</em>视图，形状 6 × 8，C(c, r) = A(r, c)。它的两个 stride 留给你自己推（对照 a1 的转置视图想一想：沿 C 的第 0 维走一步，内存地址前进多少？沿第 1 维呢？），a2-3 的转置读出视图就是这个思路。</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 196" role="img" aria-labelledby="fig23-t">
     <title id="fig23-t">同一块 LDS 的三个视图：A 是完整矩阵，B 只看偶数行，C 是转置后的视图，它的 stride 留作思考</title>
@@ -889,7 +896,7 @@ CK_TILE_DEVICE void block_sync_lds()
 {
     s_waitcnt_barrier&lt;waitcnt_arg::kMaxVmCnt, waitcnt_arg::kMaxExpCnt, lgkmcnt&gt;();
 }</code></pre>
-  <p>往上看第 257–279 行：在 gfx942 上它展开成 <code>s_waitcnt lgkmcnt(0)</code>（等本 wavefront 发出的 LDS 读写全部完成）再加 <code>s_barrier</code>（等 block 内所有 wavefront 都到达）；全局内存的计数器 vmcnt 取最大值，即“不等”。本机对比过：同一段“写 LDS → 同步 → 读 LDS”的代码，用 <code>__syncthreads()</code> 和用 <code>block_sync_lds()</code> 编译出的指令完全相同。CK-Tile 自己封装一层，是为了在流水线化的 kernel 里精确控制“等哪个计数器、等到几”（模板参数 <code>lgkmcnt</code>；同文件还有只等全局 load 的 <code>block_sync_lds_direct_load</code>），本课用默认值即可。</p>
+  <p>往上看第 257–279 行：在 gfx942 上它展开成 <code>s_waitcnt lgkmcnt(0)</code>（等本 wavefront 发出的 LDS 读写全部完成）再加 <code>s_barrier</code>（等 block 内所有 wavefront 都到达）；全局内存的计数器 vmcnt 取最大值，即“不等”。本机对比过：同一段“写 LDS → 同步 → 读 LDS”的代码，用 <code>__syncthreads()</code> 和用 <code>block_sync_lds()</code> 编译出的指令完全相同。CK-Tile 自己封装一层，是为了在流水线化的 kernel 里精确控制“等哪个计数器、等到几”（模板参数 <code>lgkmcnt</code>；同文件第 287–291 行还有只等 vmcnt 的 <code>block_sync_lds_direct_load</code>：在 gfx942 上 vmcnt 同时计数向量内存的读和写，典型用途是“buffer_load 直接写入 LDS”之后的同步），本课用默认值即可。</p>
 </div>
 <p>把前面的东西串起来，一个经过 LDS 的 kernel 有固定的五步。下面的例子是一个“看起来什么都没做”的拷贝 <code>out = in</code>（形状 rows × 32），但它在 LDS 里<strong>换了一次分布</strong>：用 §2.1 的 Enc32x32（适合合并读全局内存）读进来、写进 LDS；同步；再用另一个分布——每个线程拿同一列里连续 8 行——从 LDS 读出来，写回全局内存。</p>
 <figure class="diagram">
@@ -1020,7 +1027,7 @@ CK_TILE_DEVICE auto block_tile_reduce(const InDistributedTensor_&amp; in_tensor,
                                       const InDataType_&amp; reduce_init)</code></pre>
   <ul>
     <li><code>AccDataType_</code>：累加器的类型，要显式写在尖括号里，例如 <code>block_tile_reduce&lt;float&gt;(…)</code>。</li>
-    <li><code>in_reduce_dims</code>：要归约掉的 <strong>X 维</strong>编号。对行方向的结果（每行一个数）要消掉的是列，即 <code>sequence&lt;1&gt;{}</code>。</li>
+    <li><code>in_reduce_dims</code>：要归约掉的 <strong>X 维</strong>编号。对行方向的结果（每行一个数）要消掉的是列，即 <code>sequence&lt;1&gt;{}</code>。注意当前实现<strong>只支持二维 tile、归约第 1 维</strong>：真正做线程内合并的那个重载把“外层遍历 X0、内层遍历 X1”写死了（第 186 行、第 237–249 行的 FIXME），而归约后的分布却按你写的维度推导。写 <code>sequence&lt;0&gt;{}</code> 也能编译、能运行，结果静默出错（本机实测：8 × 64 的 tile 按列求和，得到的数与正确值毫无关系，没有任何报错）。</li>
     <li><code>reduce_func</code>：二元函数 (a, b) → a ⊕ b；<code>reduce_init</code>：单位元（求和是 0，求最大值是 −∞），类型必须与输入元素类型相同（第 274 行的 <code>static_assert</code>）。</li>
   </ul>
   <p>返回一个新的 distributed tensor：它的分布由 <code>make_reduce_tile_distribution_encoding</code> 从输入分布推导（第 277–280 行），然后对每个线程把被归约方向上的 Y 全部合并进去。</p>
@@ -1073,7 +1080,7 @@ CK_TILE_DEVICE auto block_tile_reduce(const InDistributedTensor_&amp; in_tensor,
   <figcaption><b>图 3.1</b>归约把“列方向”拆成了两部分：Y 认领的部分立刻在寄存器里合并完；lane 认领的部分变成 R 段，表示“这 16 个 lane 应该持有同一个值”，但此刻它们各持一份部分结果。</figcaption>
 </figure>
 <p>源码注释里的限制要当真：<strong>至少要留一个 Y 维不被归约</strong>。本机实测，用 Lab 2 那种“行方向只有 lane、没有 Y”的 4 × 64 分布去归约列，编译直接失败（<code>tile_distribution_encoding.hpp:87</code> 处 <code>no matching constructor for initialization of 'array&lt;index_t, NDimY&gt;'</code> 等一串错误）——归约后 Y 维个数为 0，后面的代码处理不了。所以设计分布时，结果方向（这里是行）上要有一个 Y 段，哪怕长度只是 1。</p>
-<p>同一个文件第 186–194 行还有一个 4 参数的重载 <code>block_tile_reduce(acc, in, sequence&lt;…&gt;{}, f)</code>：它不新建累加器，而是把 <code>in</code> 归约<strong>进</strong>一个已经存在的 <code>acc</code>（3 参数版本内部就是先建 acc、填上 init、再调它）。当一行太长、要分几次 load 时，就用它把每一块累加到同一个 acc 上（§3.3）。</p>
+<p><code>block_tile_reduce</code> 有两个重载，参数个数都是 4，靠第一个参数区分。上面这个（第 261–269 行）<strong>返回一个新累加器</strong>：<code>(in, dims, f, init)</code>。同一个文件第 186–194 行的另一个以 <strong>已有的累加器为第一个参数</strong>：<code>(acc, in, dims, f)</code>，它不新建累加器、也没有 init，而是把 <code>in</code> 归约<strong>进</strong> <code>acc</code>，<code>acc</code> 原地被修改、函数返回 void。“返回新累加器”的版本内部就是先建 acc、填上 init、再调它（第 276–291 行）。所以传进去的 <code>acc</code>，分布必须正好是 <code>in</code> 的分布归约之后的样子，而且已经有了合适的初值。当一行太长、要分几次 load 时，就用第二个重载把每一块累加到同一个 acc 上（§3.3）。</p>
 <div class="callout pitfall" data-title="pad 出来的 0 不一定是单位元">
   <p>§2.3 的 <code>pad_tensor_view</code> 让越界位置读成 0。求和时 0 正好是单位元，不影响结果；求最大值就不是了。本机实测：8 × 60 的矩阵全是 −3，用 8 × 64 的窗口加 pad 求行最大值，结果是 0 而不是 −3——多出来的 4 列贡献了 0。本节例子刻意让列数恰好是 64，回避了这个问题。</p>
 </div>
@@ -1108,10 +1115,10 @@ CK_TILE_DEVICE auto block_tile_reduce(const InDistributedTensor_&amp; in_tensor,
                 // reduce
                 v_local = reduce_func(v_local, v_remote);
             }</code></pre>
-  <p>逐行读：只处理“lane（<code>idim_p_lane</code>，即最后一个 P）拥有的 R 段”；R 段长度必须是 2 的幂；<code>lid_over_rid_derivative</code> 是“R 坐标加 1 时 lane id 加几”——例子里 R 段是 lane 的最低 16 位段，所以是 1；然后做 log₂(16) = 4 轮，每轮从 lane + delta 拉一个值过来合并，delta 依次是 8、4、2、1。这和你在 Lab 1 a3 写的 <code>for (d = 32; d &gt; 0; d /= 2) v += __shfl_down(v, d);</code> 是同一个树形结构，只是 delta 按分布缩放、而且只在 16 个 lane 的范围内做。<code>warp_shuffle_down</code>（<code>core/arch/utility.hpp</code> 第 47–58 行）用的也正是 <code>__shfl_down</code> 背后的那条 <code>ds_bpermute_b32</code>。</p>
+  <p>逐行读：只处理“lane（<code>idim_p_lane</code>，即最后一个 P）拥有的 R 段”；R 段长度必须是 2 的幂；<code>lid_over_rid_derivative</code> 是“R 坐标加 1 时 lane id 加几”——例子里 R 段是 lane id 最低的那一段（长度 16，即 lane id 的低 4 位），所以是 1；然后做 log₂(16) = 4 轮，每轮从 lane + delta 拉一个值过来合并，delta 依次是 8、4、2、1。这和你在 Lab 1 a3 写的 <code>for (d = 32; d &gt; 0; d /= 2) v += __shfl_down(v, d);</code> 是同一个树形结构，只是 delta 按分布缩放、而且只在 16 个 lane 的范围内做。<code>warp_shuffle_down</code>（<code>core/arch/utility.hpp</code> 第 47–60 行）用的也正是 <code>__shfl_down</code> 背后的那条 <code>ds_bpermute_b32</code>，只是越界时行为不同：HIP 的 <code>__shfl_down</code> 在 lane + delta 超出 wavefront 时返回自己的值（<code>hip/amd_detail/amd_warp_functions.h</code> 第 375–381 行），CK 的版本直接把地址交给 <code>ds_bpermute</code>，按 64 回绕。本例中这些回绕来的值不会被用到（只有每组第一个 lane 的结果被保留），所以不影响结果。</p>
 </div>
 <p>树形归约之后，只有每组的第一个 lane 持有完整结果。默认参数 <code>WithBroadcast = true</code> 时，函数接着做第二遍（第 85–121 行）：用 <code>warp_shuffle_up</code> 把结果反向“广播”回同组的其他 lane，于是 16 个 lane 最终持有同一个值——正好满足 R 的含义。</p>
-<p>同一个文件第 132 行起还有一个 <code>block_tile_reduce_xor_sync</code>：每轮让 lane 与 <code>lane ^ (derivative &lt;&lt; istage)</code> 交换（第 170–171 行），这是“蝶形”归约，做完 log₂ 轮所有 lane 都已经是完整结果，不需要广播。本机对比例子 kernel 的汇编：默认的 sync 每个累加值用 8 条 <code>ds_bpermute_b32</code>（4 轮归约 + 4 轮广播），共 16 条；xor 版本 8 条，结果相同。</p>
+<p>同一个文件第 132 行起还有一个 <code>block_tile_reduce_xor_sync</code>：每轮让 lane 与 <code>lane ^ (derivative &lt;&lt; istage)</code> 交换（第 170–171 行；istage 从 0 递增，伙伴依次是 lane^1、^2、^4、^8），这是“蝶形”归约，做完 log₂ 轮所有 lane 都已经是完整结果，不需要广播。本机对比用本节片段搭成的测试 kernel（每个线程 2 个累加值）的汇编：默认的 sync 每个累加值用 8 条 <code>ds_bpermute_b32</code>（4 轮归约 + 4 轮广播），共 16 条；xor 版本 8 条，结果相同。</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 216" role="img" aria-labelledby="fig32-t">
     <title id="fig32-t">8 个 lane 的示意：树形 shuffle_down 归约后只有 lane 0 是完整结果，需要再广播；xor 蝶形归约后所有 lane 都是完整结果</title>
@@ -1120,7 +1127,7 @@ CK_TILE_DEVICE auto block_tile_reduce(const InDistributedTensor_&amp; in_tensor,
     <text x="10" y="60" font-size="11" style="fill:var(--d-muted)">down 4, 2, 1</text>
     <text x="10" y="76" font-size="11" style="fill:var(--d-muted)">再 up 1, 2, 4 广播</text>
     <text x="10" y="140" font-size="12" font-weight="700">xor_sync</text>
-    <text x="10" y="156" font-size="11" style="fill:var(--d-muted)">与 lane^4, ^2, ^1</text>
+    <text x="10" y="156" font-size="11" style="fill:var(--d-muted)">与 lane^1, ^2, ^4</text>
     <text x="10" y="172" font-size="11" style="fill:var(--d-muted)">交换，无需广播</text>
     <text x="226" y="26" font-size="9.5" text-anchor="middle" style="fill:var(--d-muted)">lane 0</text>
     <text x="260" y="26" font-size="9.5" text-anchor="middle" style="fill:var(--d-muted)">lane 1</text>
@@ -1232,7 +1239,7 @@ CK_TILE_DEVICE auto block_tile_reduce(const InDistributedTensor_&amp; in_tensor,
     <text x="430" y="142" font-size="10.5" text-anchor="middle" class="mono">1</text>
     <rect x="448" y="130" width="32" height="16" fill="var(--d-1-soft)" stroke="var(--d-1)" stroke-width="0.9"/>
     <text x="464" y="142" font-size="10.5" text-anchor="middle" class="mono">1</text>
-    <text x="202" y="161" font-size="11" text-anchor="end">^4</text>
+    <text x="202" y="161" font-size="11" text-anchor="end">^1</text>
     <rect x="210" y="149" width="32" height="16" fill="var(--d-1-soft)" stroke="var(--d-1)" stroke-width="0.9"/>
     <text x="226" y="161" font-size="10.5" text-anchor="middle" class="mono">2</text>
     <rect x="244" y="149" width="32" height="16" fill="var(--d-1-soft)" stroke="var(--d-1)" stroke-width="0.9"/>
@@ -1266,7 +1273,7 @@ CK_TILE_DEVICE auto block_tile_reduce(const InDistributedTensor_&amp; in_tensor,
     <text x="430" y="180" font-size="10.5" text-anchor="middle" class="mono">4</text>
     <rect x="448" y="168" width="32" height="16" fill="var(--d-1-soft)" stroke="var(--d-1)" stroke-width="0.9"/>
     <text x="464" y="180" font-size="10.5" text-anchor="middle" class="mono">4</text>
-    <text x="202" y="199" font-size="11" text-anchor="end">^1</text>
+    <text x="202" y="199" font-size="11" text-anchor="end">^4</text>
     <rect x="210" y="187" width="32" height="16" fill="var(--d-2-soft)" stroke="var(--d-2)" stroke-width="0.9"/>
     <text x="226" y="199" font-size="10.5" text-anchor="middle" class="mono">8</text>
     <rect x="244" y="187" width="32" height="16" fill="var(--d-2-soft)" stroke="var(--d-2)" stroke-width="0.9"/>
@@ -1287,30 +1294,31 @@ CK_TILE_DEVICE auto block_tile_reduce(const InDistributedTensor_&amp; in_tensor,
   </svg>
   <figcaption><b>图 3.2</b>每格是一个 lane 手里的值，数字表示它已经合并了几个 lane 的部分结果（满 8 = 完整）。上：树形归约后只有 lane 0 是 8，其余要靠广播补齐；下：蝶形归约每一轮所有 lane 同步前进。</figcaption>
 </figure>
-<p>完整的例子 kernel（每个 block 一个 wavefront、8 行）：</p>
-<pre data-snip="s3_2"><code class="language-cpp">// 例子：每行恰好 64 列，求每行的最大值。一个 block = 1 个 wavefront，负责 8 行
-constexpr index_t kRows = 8, kCols = 64;
-
-__global__ void row_max_kernel(const float* in, float* out, index_t rows) {
-  auto vin = make_naive_tensor_view&lt;address_space_enum::global&gt;(
-      in, make_tuple(rows, kCols), make_tuple(kCols, 1), number&lt;4&gt;{}, number&lt;1&gt;{});
-  auto vout = make_naive_tensor_view&lt;address_space_enum::global&gt;(
-      out, make_tuple(rows), make_tuple(1), number&lt;1&gt;{}, number&lt;1&gt;{});
-  constexpr auto dist = make_static_tile_distribution(Enc8x64{});
-
-  const index_t row0 = static_cast&lt;index_t&gt;(blockIdx.x) * kRows;
-  auto win = make_tile_window(vin, make_tuple(number&lt;kRows&gt;{}, number&lt;kCols&gt;{}), {row0, 0}, dist);
-  auto t = load_tile(win);
-
-  auto f_max = [](float a, float b) { return a &gt; b ? a : b; };
-  auto acc = block_tile_reduce&lt;float&gt;(t, sequence&lt;1&gt;{}, f_max, -INFINITY);   // ① 线程内：消掉 Y1
-  block_tile_reduce_sync(acc, f_max);                                         // ② 跨 lane：合并 R
-
-  // 输出是 1 维的 8 个元素，直接沿用 acc 的分布
-  auto wout = make_tile_window(vout, make_tuple(number&lt;kRows&gt;{}), {row0}, acc.get_tile_distribution());
-  store_tile(wout, acc);
-}</code></pre>
-<p><strong>本机运行结果</strong>：rows = 8、24、4096（输入大部分是负数，检验 −∞ 初值）逐位正确。再看中间过程：把输入全设成 1、改成求和，打印每个 lane 的两个累加值——sync 之前每个 lane 都是 (4, 4)（自己那 4 列），sync 之后 lane 0、1、15、16、17、63 都是 (64, 64)。最后的 <code>store_tile</code> 用的输出窗口直接借了 <code>acc.get_tile_distribution()</code>：输出是一维的 8 个数，分布与累加器一致。</p>
+<p>落到代码上，§3.1 和本节的两步各是一次调用，再加上写回。下面三个片段是<strong>孤立的</strong>：它们都假设 <code>t</code> 是用 §3.1 的 <code>Enc8x64</code> 分布 <code>load_tile</code> 得到的 8 × 64 tile，视图、窗口、load 怎么写 §2 已经讲过，这里不重复；重点是每次调用的输入、输出和分布的变化。</p>
+<p><strong>片段 ①：线程内归约</strong>（§3.1 的“返回新累加器”的版本）。</p>
+<pre data-snip="s3_2a"><code class="language-cpp">auto f_max = [](float a, float b) { return a &gt; b ? a : b; };
+auto acc = block_tile_reduce&lt;float&gt;(t, sequence&lt;1&gt;{}, f_max, -INFINITY);</code></pre>
+<ul>
+  <li>输入 <code>t</code>：每个线程 2 × 4 = 8 个元素（Y0 × Y1）。</li>
+  <li>输出 <code>acc</code>：分布就是 §3.1 的 <code>Enc8x64Reduced</code>，每个线程 2 个值（Y0 的两行各一个），每个值只合并了这个线程自己的 4 列。</li>
+  <li>尖括号里的 <code>float</code> 是累加器类型；<code>-INFINITY</code> 是 <code>float</code>，与 <code>t</code> 的元素类型一致（第 274 行要求）。</li>
+</ul>
+<p><strong>片段 ②：跨 lane 合并</strong>（本节的 sync）。</p>
+<pre data-snip="s3_2b"><code class="language-cpp">block_tile_reduce_sync(acc, f_max);   // 原地修改 acc，没有返回值</code></pre>
+<ul>
+  <li>输入输出是同一个 <code>acc</code>，分布不变；变的是值：调用前同一行的 16 个 lane 各持一份部分结果，调用后都持有整行的结果。</li>
+  <li>它只合并 lane 认领的 R 段，warp 认领的段不管（见下面的 pitfall）。</li>
+</ul>
+<p><strong>片段 ③：写回</strong>。</p>
+<pre data-snip="s3_2c"><code class="language-cpp">auto wout = make_tile_window(vout, make_tuple(number&lt;8&gt;{}), {row0}, acc.get_tile_distribution());
+store_tile(wout, acc);</code></pre>
+<ul>
+  <li><code>vout</code> 是长度为 rows 的<strong>一维</strong>视图；窗口长度 8 = tile 的行数，原点是这块 tile 的起始行 <code>row0</code>。</li>
+  <li>窗口的分布直接借用 <code>acc</code> 的。<code>store_tile</code> 的签名要求窗口与张量的分布是<em>同一个类型</em>：用另一个 encoding 构造的分布会在编译期报 <code>no matching function for call to 'store_tile'</code>；借用最不容易出错。</li>
+  <li>一维视图同样可以用 <code>pad_tensor_view</code> 包一层（tile 长度与 bool 序列都只有一项）。行数不是 tile 行数的倍数时就需要它，道理与 §2.3 相同。</li>
+  <li>R 段上的 16 个 lane 都持有这一行的结果，<code>store_tile</code> 时它们会怎么写？线索：R 维在分布的坐标适配器里对应一个 <code>replicate</code> 变换（<code>core/tensor/tile_distribution.hpp</code> 第 285–292 行）。先想清楚它对算出的 X 坐标有没有贡献，再去读写路径——这是 a3 书面问题 2。</li>
+</ul>
+<p><strong>本机实测</strong>（把三个片段放进一个每 block 1 个 wavefront、8 行的 kernel）：rows = 8、24、4096（输入大部分是负数，检验 −∞ 初值）逐位正确。再看中间过程：输入全设成 1、改成求和，打印每个 lane 的两个累加值——sync 之前每个 lane 都是 (4, 4)（自己那 4 列），sync 之后 64 个 lane 全都是 (64, 64)。</p>
 <div class="callout pitfall" data-title="sync 不跨 wavefront">
   <p>文件第 9 行的注释写得很直接：<code>// This file is not support cross warp reduce</code>。sync 只处理 lane 认领的 R 段，<strong>warp 认领的段即使被归约，也不会被合并</strong>（第 4 个模板参数虽然叫 <code>CrossWarp</code>，两个分支都只在 wavefront 内部换数据）。本机实测：2 个 wavefront、让 warp 认领列方向的一段（每行 128 列，每个 wavefront 管 64 列），全 1 输入，sync 之后两个 wavefront 各自得到 64，而不是 128——没有报错，只是结果错。要跨 wavefront 合并，得像 Lab 1 §4.4 那样经过 LDS 自己写。最简单的做法是设计分布时就让<strong>一行只落在一个 wavefront 里</strong>。</p>
 </div>
@@ -1334,7 +1342,7 @@ CK_TILE_DEVICE void move_tile_window(
 {
     window.move(step);
 }</code></pre>
-  <p><code>step</code> 是一个 <code>multi_index</code>（和窗口原点同一个类型），按视图的维度给出“每一维挪多少”，通常写成花括号 <code>{0, kTN}</code>。窗口以非 const 引用传入、原地修改；它内部缓存的每个线程的坐标也一并平移（只是加法，不重新做整条变换链）。</p>
+  <p><code>step</code> 是一个 <code>multi_index</code>（和窗口原点同一个类型），按视图的维度给出“每一维挪多少”，通常写成花括号 <code>{0, kTN}</code>。窗口以非 const 引用传入、原地修改；它内部缓存的每个线程的坐标也随之更新：沿视图的变换链做<strong>增量</strong>更新（每个变换只根据坐标的增量更新自己的下层坐标，<code>tensor_adaptor_coordinate.hpp</code> 第 172 行起逆序遍历每个变换），不从头重算。对本例的 embed 和 pad 来说，这就是几次加法；遇到 merge 这类变换则有进位、借位的逻辑。</p>
 </div>
 <p>下面的例子不是归约，而是逐元素的 <code>y = alpha · x</code>：一个 block 负责 8 行组成的横条，窗口从第 0 列出发，每轮处理 8 × (16·kVec) 个元素，然后两个窗口一起往右挪一个 tile 宽。列数不是 tile 宽的整数倍也没关系——最后一块伸出去的部分由 pad 屏蔽（§2.3）。</p>
 <pre data-snip="s3_3"><code class="language-cpp">// 例子：y = alpha · x，x、y 都是 rows × cols 的行主序矩阵。
@@ -1402,7 +1410,7 @@ __global__ void scale_strip_kernel(const float* x, float* y, float alpha, index_
 <div class="callout pitfall" data-title="sweep_tile 要求每个 X 维都有 Y">
   <p>这个例子的行方向全部由 P 认领（warp 2 × lane 4），没有 Y。本机实测，这时对它调用 <code>sweep_tile</code>（Lab 2 §3.4 的逐元素遍历）会编译失败：<code>implicit instantiation of undefined template 'ck_tile::impl::reverse_slice_sequence_impl&lt;…&gt;'</code>。所以例子改用 <code>tile_elementwise_in(f, t)</code>（<code>core/tensor/tile_elementwise.hpp</code> 第 40 行）：对 <code>t</code> 的每个元素调用 <code>f</code>，返回同分布的新 tile，不在乎 Y 怎么分。给行方向补一个长度为 1 的 Y 段，<code>sweep_tile</code> 也能编译。</p>
 </div>
-<p>把这个循环和 §3.1 的 4 参数 <code>block_tile_reduce</code> 放在一起想：如果每一步不是“算完就写”，而是把这一块归约进同一个累加器，循环结束后再做一次 sync、写一次结果——这就是沿长行做归约的骨架。</p>
+<p>把这个循环和 §3.1 中“累加进已有累加器”的 <code>block_tile_reduce</code> 重载放在一起想：如果每一步不是“算完就写”，而是把这一块归约进同一个累加器，循环结束后再做一次 sync、写一次结果——这就是沿长行做归约的骨架。</p>
 
 <h3 id="s3-4"><span class="sec">§3.4</span>guaranteed vector length 与对齐</h3>
 <p><code>make_naive_tensor_view</code>（和 <code>make_naive_tensor_descriptor</code>）的最后两个参数，Lab 2 称作“保证的最内维向量长度”和“保证的最内维 stride”。它们是你对 CK-Tile 许下的<strong>承诺</strong>：“沿最内维，从 V 的倍数开始的每 V 个元素，可以当成一个向量一次访问”。CK-Tile 不检查这个承诺，只是照着它生成指令：</p>
@@ -1410,7 +1418,7 @@ __global__ void scale_strip_kernel(const float* x, float* y, float alpha, index_
   <li>向量长度 = gcd(承诺的 V, 认领最内维最低段的那个 Y 的长度)（<a href="../lab2-cktile-intro/tutorial.html#s3-2">Lab 2 §3.2</a>）。不承诺（省略或写 1）就是逐元素访问。</li>
   <li><strong>越界检查以“一个向量”为单位</strong>：<code>buffer_view.hpp</code> 第 288–291 行的 <code>get</code> 只接受<em>一个</em> <code>bool is_valid_element</code>；pad 变换计算的是向量<em>第一个元素</em>的坐标是否有效。<code>right_pad</code> 在计算向量长度时的注释（<code>coordinate_transform.hpp</code> 第 420–422 行）说得很清楚：“we allow pass through this vector length. If one need per-pixel check, should change the guaranteed vector length while creating the tensor view. It's up to runtime to check the padding length should be multiple of vector length”。</li>
 </ul>
-<p>换句话说，承诺 V 时你必须保证：<strong>任何一个从 V 的倍数开始的向量，要么完全在一行之内，要么完全在一行之外</strong>。对行主序矩阵，这等价于“列数是 V 的倍数”；再加上数组首地址对齐，每个向量的起始地址也就对齐到 V 个元素。下面的实验把 §2.3 的 peek 改成承诺 V：一个 16 × 16 的窗口读 3 × 6 的矩阵（带 pad），6 是 2 的倍数、不是 4 的倍数。</p>
+<p>换句话说，承诺 V 时你必须保证：<strong>任何一个从 V 的倍数开始的向量，要么完全在一行之内，要么完全在一行之外</strong>。对行主序矩阵，这等价于“列数是 V 的倍数”——否则行尾那个向量会伸进下一行，而 pad 只检查它的第一个元素，拦不住。（列数是 V 的倍数、数组首地址又对齐时，每个向量的起始地址也恰好对齐到 V 个元素；对齐是另一件事，下面实验的结果里会看到，在 gfx942 上它不是出错的原因。）下面的实验把 §2.3 的 peek 改成承诺 V：一个 16 × 16 的窗口读 3 × 6 的矩阵（带 pad），6 是 2 的倍数、不是 4 的倍数。</p>
 <pre data-snip="s3_4"><code class="language-cpp">// 16×16 的窗口读 3×6 的矩阵（带 pad），视图承诺最内维向量长度 kVec
 template &lt;index_t kVec&gt;
 __global__ void peek_vec(const float* in, float* dump, index_t rows, index_t cols) {
