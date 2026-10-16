@@ -96,9 +96,12 @@ inline std::vector<float> random_floats(size_t n, uint64_t seed, float lo = -1.f
 }
 
 // 全局（与模板参数无关）的哨兵序号：任意类型的相邻缓冲区哨兵都不同。
+// 哨兵字节的选取：把重复字节按 float32 解码，指数位必须很大（字节取 0x60–0x7F 或 0xE0–0xFF，数值约 ±1e19 ~ 3e38，
+// 0xFF 为 NaN）。否则像 0xA5（≈-2e-16）、0x1E 这类哨兵读成 float 接近 0，学生 kernel 越界读入后乘以它几乎不改变结果，
+// 漏掉的边界错误就能蒙混过关；取巨大值后任何越界读都会明显污染结果。
 inline unsigned char next_guard_pattern() {
-  static const unsigned char kPatterns[] = {0xA5, 0x5A, 0xC3, 0x3C, 0x96, 0x69, 0x81, 0x7E,
-                                            0xB2, 0x4D, 0xD7, 0x28, 0xE1, 0x1E, 0x8B, 0x74};
+  static const unsigned char kPatterns[] = {0x6A, 0xE5, 0x75, 0xF2, 0x7F, 0xEA, 0x63, 0xFB,
+                                            0x6C, 0xE1, 0x79, 0xF6, 0x66, 0xED, 0x7B, 0xFD};
   static int counter = 0;
   return kPatterns[counter++ % 16];
 }

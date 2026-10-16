@@ -31,7 +31,7 @@ make run A=a4 CASE=tiled_gflops          # 只运行一个用例，看原始输�
 | `naive_all_shapes` | 3 | naive，(M,N,K) = 1×1×1、17×33×65、64³、128×96×200、500×300×257、512³ |
 | `tiled_aligned` | 2 | tiled，128³ |
 | `tiled_all_shapes` | 4 | tiled，同上全部形状（含非整除、K 不是 tile 的倍数） |
-| `tiled_gflops`（性能） | 4 | M=N=K=2048 的 fp32 GEMM 须达到 2000 GFLOPS（参考实现约 4600；naive 约 1150） |
+| `tiled_gflops`（性能） | 4 | M=N=K=2048 的 fp32 GEMM 须达到 2000 GFLOPS（空闲 MI308X 实测：参考实现约 4600；naive 约 1150） |
 
 正确性按逐元素误差界判定：`|C - ref| ≤ 1e-5 · Σ|a·b| + 1e-6`，与求和顺序无关，所以你可以随意安排 K 方向的累加顺序。
 
@@ -45,12 +45,19 @@ make run A=a4 CASE=tiled_gflops          # 只运行一个用例，看原始输�
 
 </details>
 
-<details><summary>Hint 2（关键步骤）</summary>
+<details><summary>Hint 2（关键思路）</summary>
 
-- 每一段（tile）的流程：协作加载 A、B 子块到 LDS → `__syncthreads()` → 用 LDS 数据做 TILE 次乘加 → `__syncthreads()`（后一次同步保证下一段覆盖 LDS 前所有线程都已用完）。
-- 越界的元素加载时补 0，而不是跳过——这样乘加循环不需要边界判断。K 方向的最后一段同样要补 0。
+- 分块的核心：block 负责 C 的一个子块，沿 K 方向分段循环；每一段把 A、B 对应的子块协作搬进 LDS，再从 LDS 里做乘加。
+- 每一段需要两次 `__syncthreads()`：一次保证搬运完成，一次保证下一段覆盖 LDS 前都已用完。
+- 越界的元素在加载时补 0，K 方向的最后一段同样如此。
+
+</details>
+
+<details><summary>Hint 3（步骤提纲）</summary>
+
+- 每一段（tile）的流程：协作加载 A、B 子块到 LDS → `__syncthreads()` → 用 LDS 数据做 TILE 次乘加 → `__syncthreads()`。
+- 补 0 之后乘加循环不需要边界判断；边界判断只放在加载和最终写 C 两处；`__syncthreads()` 不能放进 `if` 里。
 - 每个线程只算 1 个输出时，LDS 读与乘加之比较高；让每个线程多算几个输出（寄存器里放多个累加器）可以进一步提速。
-- 边界判断放在加载和最终写 C 两处；`__syncthreads()` 不能放进 `if` 里。
 
 </details>
 
@@ -58,4 +65,4 @@ make run A=a4 CASE=tiled_gflops          # 只运行一个用例，看原始输�
 
 1. 计算 naive 与 tiled（TILE=32）两种实现每计算一次 FMA 需要的全局内存读取字节数（计算强度）。
 2. 用你的 GFLOPS 与 MI308X fp32 向量峰值（讲义 §1 表格）比较，差距主要来自哪里？（铺垫 Lab 4：MFMA 矩阵核心）
-3. 设计说明：用 3–5 句话写下你的 tile 尺寸、block 形状、每线程输出数、LDS 摆放等选择和理由。
+3. 设计说明（写在 answers.md）：用 3–5 句话写下你的 tile 尺寸、block 形状、每线程输出数、LDS 摆放等选择和理由。

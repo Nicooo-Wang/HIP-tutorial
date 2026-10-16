@@ -27,7 +27,7 @@ static void run(hk::Result& R, Fn fn, const char* name, int M, int N, int K, uin
   if (A.download() != ha || B.download() != hb) hk::fail(R, "%s: 输入被修改了", name);
 }
 
-static const int kShapes[][3] = {{1, 1, 1}, {17, 33, 65}, {64, 64, 64}, {128, 96, 200}, {500, 300, 257}, {512, 512, 512}};
+static const int kShapes[][3] = {{1, 1, 1}, {40, 70, 33}, {17, 33, 65}, {64, 64, 64}, {128, 96, 200}, {500, 300, 257}, {512, 512, 512}};
 
 TEST_CASE(naive_small, 1) { run(R, launch_gemm_naive, "naive", 4, 5, 6, 1); }
 TEST_CASE(naive_all_shapes, 3) {
@@ -50,6 +50,8 @@ PERF_CASE(tiled_gflops, 4) {
   double ms = hk::time_best_ms([&] { launch_gemm_tiled(A.get(), B.get(), C.get(), M, N, K, nullptr); }, 2, 10);
   R.metric = 2.0 * M * N * K / (ms * 1e-3) / 1e9;
   R.unit = "GFLOPS";
+  if (!C.guards_intact(R)) return;
+  if (A.download() != ha || B.download() != hb) { hk::fail(R, "输入被修改了"); return; }
   auto hc = C.download();
   hk::Rng rng(3);
   for (int t = 0; t < 200; ++t) {  // 抽查 200 个元素
