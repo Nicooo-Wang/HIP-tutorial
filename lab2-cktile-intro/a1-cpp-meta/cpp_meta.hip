@@ -68,8 +68,9 @@ constexpr double tuple_sum(const ck_tile::tuple<Ts...>& t) {
 // ---------------- E6：泛型 lambda ----------------
 // 两个 number<> 相加，结果仍是 number<>（值在类型里）：add_numbers(number<3>{}, number<4>{}) 的类型是 number<7>。
 // TODO(a1-E6): 补全泛型 lambda（参数类型是 auto）的返回值（讲义 §2.6）
-//   同类例子（返回 a 的值 +1，仍放在类型里）：
-//     return ck_tile::number<decltype(a)::value + 1>{};
+//   同类例子（单参数：返回 a 的两倍，仍放在类型里）：
+//     [](auto a) { return ck_tile::number<decltype(a)::value * 2>{}; }
+//   （这里的运算与你要写的不同，注意两个参数 a、b 的情况。）
 //   想一想：a、b 作为函数参数是运行期的值，为什么 decltype(a)::value 仍能用在模板参数里？
 constexpr auto add_numbers = [](auto a, auto b) {
   // >>> 你的代码 <<<

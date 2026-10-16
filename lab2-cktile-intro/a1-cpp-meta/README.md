@@ -24,7 +24,7 @@ constexpr auto add_numbers = [](auto a, auto b) { /* ... */ };                  
 
 每个 TODO 上方都有一个“同类但不同”的小例子，照着它改写即可。
 
-**编译失败时先看是否丢了 `constexpr`。** 测试里有 `constexpr index_t a = product(...)` 这类编译期调用，如果你把函数改成了非 `constexpr`，整个测试会编译失败、得 0 分，并显示编译错误。这是有意设计：CK-Tile 里非 `constexpr` 的函数同样无法用在模板参数里。
+**编译失败时先看是否丢了 `constexpr`。** 测试里有 `constexpr index_t a = product(...)` 这类编译期调用，如果你把函数改成了非 `constexpr`，整个测试会编译失败、得 0 分，并显示编译错误。这是有意设计：CK-Tile 里非 `constexpr` 的函数同样无法用在模板参数里。同理，`row_major_strides` 的返回类型如果不是 `ck_tile::array<index_t, N>`，测试里的 `static_assert` 会让整个测试文件编译失败。
 
 ## 怎么判分
 
@@ -59,12 +59,12 @@ make run A=a1 CASE=e2_row_major_strides  # 只运行一个用例，看原始输�
 
 <details><summary>Hint 2（关键步骤）</summary>
 
-- E1：初值用 `index_t{1}`，再向右折叠 `Is`。
-- E2：先 `constexpr index_t lens[...] = {Ls...};`，再用一个累乘变量 `acc`（初值 1），从最后一维到第 0 维：先把 `acc` 写进 `s(i)`，再 `acc *= lens[i]`。`i` 要用有符号类型，才能写 `i >= 0` 的循环。
-- E3：lambda 里 `constexpr index_t v = i.value;`，然后 `out[v] = float(v * v)`。
-- E4：double 分支返回 2；其余分支用 16 除以单个元素占多少字节。
-- E5：`static_for<0, sizeof...(Ts), 1>` 遍历，每次把 `t.at(i)` 转成 `double` 累加到局部变量。
-- E6：`decltype(a)` 是 `number<…>` 类型，`::value` 是它的值；两个值相加后作为 `number` 的模板参数。
+- E1：折叠的初值取“乘法的单位元”，然后把整个参数包向右折叠进去。
+- E2：先把参数包放进一个编译期的普通数组，再准备一个累乘变量；从最后一维开始往第 0 维走，每走到一维，先把累乘变量当前值记为这一维的 stride，再把这一维的长度乘进累乘变量。循环下标要能走到第 0 维之后停下，想想该用有符号还是无符号类型。
+- E3：在 lambda 里先从循环变量取出编译期常量放进一个 `constexpr` 变量，再用它计算平方并写入 `out` 对应位置。
+- E4：double 走一个分支，其余类型走另一个分支；后者用“16 字节”除以“单个元素的字节数”。
+- E5：用 `static_for` 遍历 tuple 的全部下标（下标个数由参数包的大小决定），每次取出该下标的元素，转成 double 加到一个局部累加变量上，最后返回它。
+- E6：从 `a`、`b` 的类型里分别取出各自编码的值，相加后用这个和构造新的 `number` 类型的对象并返回。
 
 </details>
 
