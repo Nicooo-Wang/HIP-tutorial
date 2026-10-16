@@ -604,16 +604,8 @@ __global__ void reverse_each_block(const float* in, float* out) {
 </div>
 
 <h3 id="s4-2"><span class="sec">§4.2</span>LDS 树形归约</h3>
-<p>最经典的 block 内归约：每个线程先把自己的值放进 LDS 数组 <code>s[0 .. kBlock)</code>，然后一层层“对折”：</p>
-<pre><code class="language-text">s[t] = 本线程的值                    // 所有线程
-—— 屏障 ——
-stride = kBlock / 2
-重复，直到 stride = 0：
-    若 t &lt; stride：s[t] = s[t] + s[t + stride]
-    —— 屏障 ——
-    stride = stride / 2
-s[0] 就是全 block 的和</code></pre>
-<p>每一层活跃线程减半：256 个数 → 128 → 64 → … → 1，共 log₂256 = 8 层。下面的小部件用 16 个元素演示（kBlock = 16）：</p>
+<p>最经典的 block 内归约是“对折”：每个线程先把自己的值放进 LDS 数组 <code>s[0 .. kBlock)</code>；然后把数组看成前后两半，前一半的每个槽位加上后一半中与它“对齐”的那个槽位——两两配对、加成一个；再对前一半重复同样的对折，直到只剩一个数。</p>
+<p>每一层活跃线程减半：256 个数 → 128 → 64 → … → 1，共 log₂256 = 8 层。“前一半的槽位 t 加上后一半中对应的槽位”——这个对应槽位的下标、以及每一层哪些线程活跃，请从下面的小部件（16 个元素，kBlock = 16）中自己读出来：</p>
 <figure class="widget" data-widget="tree-reduce">
   <div class="widget-head"><b>LDS 树形归约（16 个元素）</b><span class="hint">点“下一层”或“播放”</span></div>
   <div class="widget-controls">
@@ -627,13 +619,16 @@ s[0] 就是全 block 的和</code></pre>
   </div>
   <p class="readout-line" data-role="summary"></p>
   <svg data-role="svg" viewBox="0 0 640 330" role="img" aria-label="树形归约每一层的 LDS 内容"></svg>
-  <figcaption><b>小部件 4.1</b>每一行是“这一层加完、过了屏障之后”的 LDS 内容；箭头从 <code>s[源]</code> 指向被累加的 <code>s[t]</code>，红色描边是本层活跃的线程。两行之间的红色虚线就是 <code>__syncthreads()</code>。切换到“交错”寻址对比：同样 log₂n 层，但活跃线程散布在整个 block 中。</figcaption>
+  <figcaption><b>小部件 4.1</b>每一行是“这一层加完之后”的 LDS 内容；箭头从 <code>s[源]</code> 指向被累加的 <code>s[t]</code>，红色描边是本层活跃的线程，两行之间的虚线是层与层的分界。切换到“交错”寻址对比：同样 log₂n 层，但活跃线程散布在整个 block 中。</figcaption>
 </figure>
-<p>三个要点：</p>
+<p>小部件只画了“每一层算什么”，没画线程之间怎么<em>协调</em>。写代码之前，对每一层问自己两个问题（§3.5 的思考方式）：</p>
 <ul>
-  <li><strong>每一层之后都要屏障。</strong>第 k + 1 层要读的 <code>s[t + stride]</code> 是第 k 层别的线程写的（可能在别的 wavefront 里）。</li>
-  <li><strong>屏障在 <code>if (t &lt; stride)</code> 之外。</strong>不活跃的线程也必须到达屏障（§3.5 的坑）。</li>
-  <li><strong>为什么选“顺序寻址”。</strong>用 t &lt; stride 选活跃线程时，活跃线程是连续的一段：前几层里整个 wavefront 要么全活跃、要么全不活跃，没有分支发散（§2.1）；而且同一 wave 读的 <code>s[t + stride]</code> 是连续地址，没有 bank conflict（§3.6）。交错寻址的活跃线程星星点点地分布在所有 wavefront 里，每个 wave 都只有少数 lane 在干活，还会产生 bank conflict。</li>
+  <li><strong>这一层要读的槽位，是谁写的？</strong>是本线程自己，还是上一层别的线程——甚至别的 wavefront？</li>
+  <li><strong>读的时候，它一定已经写完了吗？</strong>如果不能保证，需要什么？那个东西应该放在哪里，才能让 block 里<em>每个</em>线程都执行到它（包括这一层不活跃的线程）？</li>
+</ul>
+<p>另外比较一下两种寻址方式：</p>
+<ul>
+  <li><strong>为什么选“顺序寻址”。</strong>顺序寻址时活跃线程是连续的一段：前几层里整个 wavefront 要么全活跃、要么全不活跃，没有分支发散（§2.1）；而且同一 wave 读的是连续地址，没有 bank conflict（§3.6）。交错寻址的活跃线程星星点点地分布在所有 wavefront 里，每个 wave 都只有少数 lane 在干活，还会产生 bank conflict。</li>
 </ul>
 <p>最后，函数返回时只要求 thread 0 拿到正确结果（骨架注释中的约定），因为只有 thread 0 会写 <code>dst[blockIdx.x]</code>。</p>
 
@@ -642,38 +637,39 @@ s[0] 就是全 block 的和</code></pre>
 <pre><code class="language-cpp">// HIP 原型（hip/amd_detail/amd_warp_functions.h）
 float __shfl_down(float var, unsigned int lane_delta, int width = warpSize);</code></pre>
 <p>语义：每个 lane 得到“编号比自己大 <code>lane_delta</code> 的那个 lane”的 <code>var</code>。若源 lane 超出范围（≥ width），就得到<strong>自己的</strong> <code>var</code>（本机实测：<code>__shfl_down(v, 1)</code> 在 lane 63 返回 lane 63 自己的值）。所有 lane 必须一起调用。</p>
-<p>用它做 wavefront 内归约：每一步 <code>v += __shfl_down(v, offset)</code>，offset 从 wavefront 宽度的一半开始，每步减半。下图用 8 个 lane 示意（实际是 64）：</p>
+<p>用 8 个 lane 的“玩具 wavefront”（width = 8）看两次单独的调用，每一格是该 lane 调用后得到的值：</p>
 <figure class="diagram">
-  <svg viewBox="0 0 640 266" role="img" aria-labelledby="fig43-t">
-    <title id="fig43-t">8 lane 的 shuffle-down 归约：offset 4、2、1 三步后 lane 0 得到全部 8 个值的和</title>
-    <g font-size="12"><text x="10" y="44">初始</text><text x="10" y="104">offset 4</text><text x="10" y="164">offset 2</text><text x="10" y="224">offset 1</text></g>
-    
-    <!-- rows: y=28, 88, 148, 208; cols x=110 + 64*k -->
-    <g stroke-width="1.2">
-      <rect x="85" y="28" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="149" y="28" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="213" y="28" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="277" y="28" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="341" y="28" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="405" y="28" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="469" y="28" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="533" y="28" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/>
-      <rect x="85" y="88" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-4)" stroke-width="2"/><rect x="149" y="88" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-4)" stroke-width="2"/><rect x="213" y="88" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-4)" stroke-width="2"/><rect x="277" y="88" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-4)" stroke-width="2"/><rect x="341" y="88" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="405" y="88" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="469" y="88" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="533" y="88" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/>
-      <rect x="85" y="148" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-4)" stroke-width="2"/><rect x="149" y="148" width="54" height="24" rx="3" fill="var(--d-1-soft)" stroke="var(--d-4)" stroke-width="2"/><rect x="213" y="148" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="277" y="148" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="341" y="148" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="405" y="148" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="469" y="148" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="533" y="148" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/>
-      <rect x="85" y="208" width="54" height="24" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)" stroke-width="2"/><rect x="149" y="208" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="213" y="208" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="277" y="208" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="341" y="208" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="405" y="208" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="469" y="208" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/><rect x="533" y="208" width="54" height="24" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)"/>
-    </g>
+  <svg viewBox="0 0 640 200" role="img" aria-labelledby="fig43-t">
+    <title id="fig43-t">8 lane 示意：__shfl_down(v, 4) 时 lane k 得到 lane k+4 的值，lane 4 到 7 越界得到自己的值；__shfl_down(v, 1) 同理</title>
+    <g font-size="12"><text x="10" y="50">v</text><text x="10" y="114">__shfl_down(v, 4)</text><text x="10" y="178">__shfl_down(v, 1)</text></g>
     <g font-size="11" text-anchor="middle" class="mono">
-      <text x="112" y="22">lane0</text><text x="176" y="22">1</text><text x="240" y="22">2</text><text x="304" y="22">3</text><text x="368" y="22">4</text><text x="432" y="22">5</text><text x="496" y="22">6</text><text x="560" y="22">7</text>
-      <text x="112" y="44">a</text><text x="176" y="44">b</text><text x="240" y="44">c</text><text x="304" y="44">d</text><text x="368" y="44">e</text><text x="432" y="44">f</text><text x="496" y="44">g</text><text x="560" y="44">h</text>
-      <text x="112" y="104">a+e</text><text x="176" y="104">b+f</text><text x="240" y="104">c+g</text><text x="304" y="104">d+h</text>
-      <text x="112" y="164">a+e+c+g</text><text x="176" y="164">b+f+d+h</text>
-      <text x="112" y="224">Σ</text>
+      <text x="196" y="20">lane0</text><text x="252" y="20">1</text><text x="308" y="20">2</text><text x="364" y="20">3</text><text x="420" y="20">4</text><text x="476" y="20">5</text><text x="532" y="20">6</text><text x="588" y="20">7</text>
+    </g>
+    <g stroke-width="1.2">
+      <rect x="172" y="30" width="48" height="26" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="228" y="30" width="48" height="26" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="284" y="30" width="48" height="26" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="340" y="30" width="48" height="26" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="396" y="30" width="48" height="26" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="452" y="30" width="48" height="26" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="508" y="30" width="48" height="26" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/><rect x="564" y="30" width="48" height="26" rx="3" fill="var(--d-1-soft)" stroke="var(--d-1)"/>
+      <rect x="172" y="94" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="228" y="94" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="284" y="94" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="340" y="94" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="396" y="94" width="48" height="26" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)" stroke-dasharray="3 2"/><rect x="452" y="94" width="48" height="26" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)" stroke-dasharray="3 2"/><rect x="508" y="94" width="48" height="26" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)" stroke-dasharray="3 2"/><rect x="564" y="94" width="48" height="26" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)" stroke-dasharray="3 2"/>
+      <rect x="172" y="158" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="228" y="158" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="284" y="158" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="340" y="158" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="396" y="158" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="452" y="158" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="508" y="158" width="48" height="26" rx="3" fill="var(--d-2-soft)" stroke="var(--d-2)"/><rect x="564" y="158" width="48" height="26" rx="3" fill="var(--d-bg)" stroke="var(--d-muted)" stroke-dasharray="3 2"/>
+    </g>
+    <g font-size="12" text-anchor="middle" class="mono">
+      <text x="196" y="48">a</text><text x="252" y="48">b</text><text x="308" y="48">c</text><text x="364" y="48">d</text><text x="420" y="48">e</text><text x="476" y="48">f</text><text x="532" y="48">g</text><text x="588" y="48">h</text>
+      <text x="196" y="112">e</text><text x="252" y="112">f</text><text x="308" y="112">g</text><text x="364" y="112">h</text><text x="420" y="112">e</text><text x="476" y="112">f</text><text x="532" y="112">g</text><text x="588" y="112">h</text>
+      <text x="196" y="176">b</text><text x="252" y="176">c</text><text x="308" y="176">d</text><text x="364" y="176">e</text><text x="420" y="176">f</text><text x="476" y="176">g</text><text x="532" y="176">h</text><text x="588" y="176">h</text>
     </g>
     <g stroke="var(--d-4)" stroke-width="1.2" fill="none" marker-end="url(#arr43)">
-      <path d="M368 52 L118 86"/><path d="M432 52 L182 86"/><path d="M496 52 L246 86"/><path d="M560 52 L310 86"/>
-      <path d="M240 112 L118 146"/><path d="M304 112 L182 146"/>
-      <path d="M176 172 L118 206"/>
+      <path d="M420 56 L200 92"/><path d="M476 56 L256 92"/><path d="M532 56 L312 92"/><path d="M588 56 L368 92"/>
     </g>
     <defs><marker id="arr43" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--d-4)"/></marker></defs>
-    <text x="590" y="258" font-size="11" text-anchor="end" style="fill:var(--d-muted)">灰色 lane 也在算，但结果没人用</text>
+    <text x="504" y="138" font-size="10" text-anchor="middle" style="fill:var(--d-muted)">源 lane ≥ 8：拿到自己的值</text>
   </svg>
-  <figcaption><b>图 4.2</b>shuffle-down 归约（8 lane 示意）。每一步所有 lane 都执行同一条 <code>v += __shfl_down(v, offset)</code>，但只有前一半 lane 的结果会被后续步骤用到；log₂8 = 3 步后，lane 0 持有全部 8 个值的和。64 lane 需要 log₂64 = 6 步，offset 依次是 32、16、8、4、2、1。</figcaption>
+  <figcaption><b>图 4.2</b><code>__shfl_down</code> 的语义（8 lane 示意，真实 wavefront 是 64 lane）。<code>__shfl_down(v, 4)</code>：lane k 拿到 lane k + 4 的 v（红箭头）；lane 4–7 的源超出范围，拿回自己的值（虚线格）。<code>__shfl_down(v, 1)</code> 同理，只有 lane 7 越界。注意它只“搬运”数据，不做加法。</figcaption>
 </figure>
+<p>它本身只是“把别人的值拿过来”。要做 wavefront 内归约，请你自己设计：怎样把若干次这样的调用和加法组合起来，使 lane 0 最终拿到 wavefront 中<strong>全部</strong>值的和？需要几次调用、每次的 <code>lane_delta</code> 是多少？先在图 4.2 的 8 lane 玩具上用 a…h 推演一遍，再推广到真实的宽度。两个事实供你推广时使用：</p>
+<ul>
+  <li>本机的 wavefront 是 <strong>64</strong> 个 lane（§1.3）。</li>
+  <li>HIP 的内置变量 <code>warpSize</code> 在设备代码里给出 wavefront 宽度（本机为 64）；它是<em>运行时</em>值（见下方“注意”），可以用在循环、除法、取模里。</li>
+</ul>
 <div class="callout pitfall" data-title="CUDA 资料里的 32，在这里是 64">
-  <p>网上绝大多数 shuffle 归约代码来自 NVIDIA，warp 是 32 个线程，所以 offset 从 16 开始、循环 5 次，常写作 <code>for (int offset = 16; offset &gt; 0; offset /= 2)</code>，还会用 <code>__shfl_down_sync(0xffffffff, v, offset)</code> 这种带 32 位掩码的版本。AMD 的 wavefront 是 <strong>64</strong> 个 lane：照抄那段代码，第一步就漏掉了一半 lane 的贡献（想想 lane 0 最终汇总了哪些 lane）。正确的写法是不写死任何数字：offset 从 <code>warpSize / 2</code> 开始。<code>warpSize</code> 是 HIP 提供的内置变量，在本机上等于 64。</p>
+  <p>网上绝大多数 shuffle 归约代码来自 NVIDIA：warp 是 <strong>32</strong> 个线程，所以那些代码里到处是按 32 推出来的常数（循环几次、从多大的偏移开始），还常用 <code>__shfl_down_sync(0xffffffff, …)</code> 这种带 32 位掩码的版本。AMD 的 wavefront 是 <strong>64</strong> 个 lane：照抄这些常数，代码能编译、能运行，结果却是错的——有一部分 lane 的值根本没被汇总进来（a3 书面问题 1 请你说清楚是哪一部分）。原则：<strong>不要写死任何与 wavefront 宽度有关的数字</strong>，一律从 <code>warpSize</code> 推出来。</p>
 </div>
 <div class="callout warn" data-title="warpSize 不是编译期常量">
   <p>在 ROCm 7 中，<code>warpSize</code> 只能在设备代码里<em>运行时</em>使用（循环边界、除法、取模都可以），不能用在需要编译期常量的地方。本机实测，<code>constexpr int W = warpSize;</code> 和 <code>__shared__ float s[256 / warpSize];</code> 都会编译失败（前者报 “must be initialized by a constant expression”，后者报 LDS 数组不能是变长数组）。需要按 wave 数开 LDS 数组时，用一个编译期就确定、且足够大的尺寸——例如按“可能的最小 wavefront 宽度”算出的上界——再在运行时用 <code>warpSize</code> 决定实际用几个槽位。</p>
@@ -807,25 +803,32 @@ float __shfl_down(float var, unsigned int lane_delta, int width = warpSize);</co
 <p>算一下复用的效果。以 BM = BN = BK = 16 为例：每一段读入 16 × 16 + 16 × 16 = 512 个 float = 2 KiB，完成 16 × 16 × 16 = 4096 次乘加，平均每次乘加只需 0.5 字节显存读取——比 naive 的 8 字节少了 16 倍。一般地，每次乘加需要的显存字节数与子块边长成<strong>反比</strong>：子块越大，复用越多。（a4 书面问题 1 请你对 TILE = 32 做同样的计算。）子块大小的上限来自 LDS 容量、寄存器数量，以及“block 数要足够多才能填满 80 个 CU”。</p>
 
 <h3 id="s5-3"><span class="sec">§5.3</span>LDS 分块与 K 方向循环、两次同步</h3>
-<p>先考虑最简单的分块：BM = BN = BK = T，block 是 T × T 个线程，每个线程仍然只算 C 的一个元素。kernel 的骨架是一个沿 K 方向的循环（伪代码）：</p>
-<pre><code class="language-text">acc = 0                                        // 寄存器累加器
-for k0 = 0, T, 2T, … （直到覆盖 K）:
-    协作加载：block 的线程一起把
-        A[行块, k0 .. k0+T) → As（LDS）
-        B[k0 .. k0+T, 列块] → Bs（LDS）
-        （矩阵外的位置存 0，见 §5.4）
-    —— 屏障 ①：两块都装好了 ——
-    for kk = 0 .. T-1:
-        acc += As[本线程的行][kk] × Bs[kk][本线程的列]
-    —— 屏障 ②：所有线程都用完了这一段 ——
-若本线程的 (i, j) 在 C 范围内：写 C[i][j] = acc</code></pre>
+<p>分块 kernel 的骨架是一个沿 K 方向的循环：每一轮先让 block 的线程<strong>协作</strong>把这一段的小块搬进 LDS，再让每个线程从 LDS 里反复读、做乘加，然后进入下一轮。这个“加载 → 同步 → 计算 → 同步”的节奏在很多 kernel 里都会出现。下面用一个更简单的一维问题演示它——不是 GEMM，但节奏完全一样：</p>
+<pre><code class="language-cpp">constexpr int kT = 256;   // block 大小 = 每段 tile 的长度
+// y[i] = Σ_j |x[i] − p[j]|：每个 x[i] 都要和全部 m 个点 p[j] 比较（“全对全”，类似 n-body）
+// 每个 p[j] 被 block 内 256 个线程各用一次 → 先搬进 LDS，再让大家复用
+__global__ void sum_dist(const float* x, int n, const float* p, int m, float* y) {
+  __shared__ float tile[kT];
+  const int i = blockIdx.x * kT + threadIdx.x;
+  const float xi = (i &lt; n) ? x[i] : 0.0f;    // 越界线程也留下来：它要帮忙搬数据、参加屏障
+  float acc = 0.0f;
+  for (int j0 = 0; j0 &lt; m; j0 += kT) {
+    if (j0 + threadIdx.x &lt; m) tile[threadIdx.x] = p[j0 + threadIdx.x];   // 协作加载（合并）
+    __syncthreads();                                                      // 屏障 ①
+    const int cnt = min(kT, m - j0);                                      // 最后一段可能不满
+    for (int k = 0; k &lt; cnt; ++k) acc += fabsf(xi - tile[k]);            // 用整段 tile
+    __syncthreads();                                                      // 屏障 ②
+  }
+  if (i &lt; n) y[i] = acc;
+}</code></pre>
 <ul>
-  <li><strong>协作加载</strong>：每个线程负责搬 As、Bs 中的一个（或几个）元素。按 §3.1，让相邻线程读相邻的全局地址：As 的一行对应 A 的一行中连续的 T 个 k，Bs 的一行对应 B 的一行中连续的 T 个 j。线程数与小块元素数不相等时，用 §3.4 那样的循环让每个线程搬多个。</li>
-  <li><strong>屏障 ①</strong> 与转置中的同步作用相同：读 As、Bs 之前，别的线程负责的那部分必须已经写进去了。</li>
-  <li><strong>屏障 ②</strong> 是新出现的：下一轮循环一开始就要往 As、Bs 里写<em>下一段</em>的数据。如果某个快的 wave 已经进入下一轮开始覆盖，而慢的 wave 还在读这一段，慢 wave 就会读到被覆盖的值。所以“覆盖之前要等所有人用完”——这叫<strong>读后写（write-after-read）</strong>依赖，和屏障 ① 解决的“写后读”正好相反。</li>
-  <li>两个屏障都在循环体的“顶层”，不在任何只有部分线程进入的 <code>if</code> 里（§3.5）。</li>
+  <li><strong>协作加载</strong>：每个线程只搬 tile 中的一个元素，却要读整段 tile——这就是复用。相邻线程读相邻的全局地址，合并（§3.1）。GEMM 里每一段要搬<em>两个</em>二维小块，线程数与小块元素数也未必相等，搬运的分工（哪个线程搬哪个元素、是否要循环搬多个，参考 §3.4）需要你自己设计，同样要保证合并。</li>
+  <li><strong>屏障 ①（写后读）</strong>与转置中的同步作用相同：读 tile 之前，别的线程负责的那部分必须已经写进去了。</li>
+  <li><strong>屏障 ②（读后写）</strong>是新出现的：下一轮一开始就要往 tile 里写<em>下一段</em>的数据。如果某个快的 wave 已经进入下一轮开始覆盖，而慢的 wave 还在读这一段，慢 wave 就会读到被覆盖的值。所以“覆盖之前要等所有人用完”——这叫<strong>读后写（write-after-read）</strong>依赖，和屏障 ① 解决的“写后读”正好相反。把屏障 ② 删掉，结果会随调度时好时坏。</li>
+  <li>两个屏障都在循环体的“顶层”，不在任何只有部分线程进入的 <code>if</code> 里（§3.5）——所以越界线程不能提前 <code>return</code>。</li>
+  <li>这个例子用 <code>cnt</code> 处理最后一段不满的情况；GEMM 里有更省事的办法（§5.4 的补零），二者都可以。</li>
 </ul>
-<p>别忘了检查 LDS 读的 bank conflict（§3.6）：内层循环中，同一个 wave 的 lane 读 <code>Bs[kk][本线程的列]</code> 是连续地址，读 <code>As[本线程的行][kk]</code> 时同一行的 lane 读同一个地址（广播）。你的数据摆放如果和这里不同（比如把某个小块转置存放），就要重新按 §3.6 的公式算一遍，必要时加 padding。</p>
+<p>别忘了检查 LDS 读的 bank conflict（§3.6）：在你设计的内层循环里，写出同一个 wavefront 的 64 个 lane 在同一步读的 LDS 地址——读同一个地址是广播（不冲突），读连续地址也不冲突，按固定跨步读就要用 §3.6 的公式算一算，必要时加 padding。</p>
 
 <h3 id="s5-4"><span class="sec">§5.4</span>每线程多个输出、边界补零</h3>
 <h4>每线程多个输出（寄存器分块）</h4>
@@ -1194,11 +1197,11 @@ TUT.registerWidget("tree-reduce", function (el) {
   function draw() {
     var sim = simulate();
     var total = vals.reduce(function (a, b) { return a + b; }, 0);
-    if (level === 0) summary.textContent = "初始：每个线程 t 把自己的值写进 s[t]，然后 __syncthreads()。共 " + N + " 个数，需要 log₂" + N + " = " + LEVELS + " 层。";
+    if (level === 0) summary.textContent = "初始：每个线程 t 把自己的值写进 s[t]。共 " + N + " 个数，需要 log₂" + N + " = " + LEVELS + " 层。";
     else {
       var pr = sim.acts[level], ts = pr.map(function (p) { return p[0]; });
       summary.textContent = "第 " + level + " 层：stride = " + sim.strides[level] + "，活跃线程 t = " + ts.join(", ") +
-        "（" + ts.length + " 个），各自做 s[t] += s[t + " + sim.strides[level] + "]，然后 __syncthreads()。" +
+        "（" + ts.length + " 个），各自做 s[t] += s[t + " + sim.strides[level] + "]。" +
         (level === LEVELS ? "  结果 s[0] = " + sim.states[LEVELS][0] + "，直接求和 = " + total + (sim.states[LEVELS][0] === total ? " ✓" : " ✗") : "");
     }
     while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -1246,8 +1249,8 @@ TUT.registerWidget("tree-reduce", function (el) {
       }
     }
     var sy2 = top + LEVELS * rowGap + chh + 18;
-    var notes = W < 520 ? ["红色虚线 = __syncthreads()", "蓝色 = 后续层还会用到的槽位，灰色 = 不再使用"]
-                        : ["红色虚线 = __syncthreads()；蓝色 = 后续层还会用到的槽位，灰色 = 不再使用"];
+    var notes = W < 520 ? ["虚线 = 层与层的分界", "蓝色 = 后续层还会用到的槽位，灰色 = 不再使用"]
+                        : ["虚线 = 层与层的分界；蓝色 = 后续层还会用到的槽位，灰色 = 不再使用"];
     notes.forEach(function (txt, k) {
       var note = TUT.svg("text", { x: labelW, y: sy2 + k * 15, "font-size": 11, style: "fill:var(--d-muted)" }, svg);
       note.textContent = txt;
