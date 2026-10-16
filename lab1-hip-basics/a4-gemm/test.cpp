@@ -53,13 +53,50 @@ PERF_CASE(tiled_gflops, 4) {
   if (!C.guards_intact(R)) return;
   if (A.download() != ha || B.download() != hb) { hk::fail(R, "输入被修改了"); return; }
   auto hc = C.download();
-  hk::Rng rng(3);
-  for (int t = 0; t < 200; ++t) {  // 抽查 200 个元素
-    int i = rng.randint(0, M - 1), j = rng.randint(0, N - 1);
-    double ref = 0, mag = 0;
-    for (int k = 0; k < K; ++k) { double p = double(ha[size_t(i) * K + k]) * hb[size_t(k) * N + j]; ref += p; mag += std::fabs(p); }
-    if (!(std::fabs(hc[size_t(i) * N + j] - ref) <= 1e-5 * mag + 1e-6)) { hk::fail(R, "大矩阵结果错误：C[%d][%d]", i, j); return; }
+  // 校验 1：每行和 C·1 与 A·(B·1)、每列和 1ᵀC 与 (1ᵀA)·B 比较，覆盖全部 M×N 个元素（未写的元素是 NaN，必然暴露）。
+  // 误差界：逐元素允许 |e_ij| ≤ 1e-5·Σ_k|a_ik·b_kj| + 1e-6（与下面抽查、功能用例相同），对一行/一列求和得
+  //   行 i：1e-5·Σ_k |a_ik|·(Σ_j |b_kj|) + N·1e-6；列 j：1e-5·Σ_k (Σ_i |a_ik|)·|b_kj| + M·1e-6，
+  // 即只要每个元素满足逐元素误差界，行/列和就一定满足——不会比逐元素检查更严格（CPU 端用 double 求和，其误差可忽略）。
+  {
+    std::vector<double> b1(K, 0), b1abs(K, 0), a1(K, 0), a1abs(K, 0);
+    for (int k = 0; k < K; ++k)
+      for (int j = 0; j < N; ++j) { double b = hb[size_t(k) * N + j]; b1[k] += b; b1abs[k] += std::fabs(b); }
+    for (int i = 0; i < M; ++i)
+      for (int k = 0; k < K; ++k) { double a = ha[size_t(i) * K + k]; a1[k] += a; a1abs[k] += std::fabs(a); }
+    for (int i = 0; i < M; ++i) {
+      double ref = 0, mag = 0, got = 0;
+      for (int k = 0; k < K; ++k) { double a = ha[size_t(i) * K + k]; ref += a * b1[k]; mag += std::fabs(a) * b1abs[k]; }
+      for (int j = 0; j < N; ++j) got += hc[size_t(i) * N + j];
+      if (!(std::fabs(got - ref) <= 1e-5 * mag + N * 1e-6)) {
+        hk::fail(R, "大矩阵结果错误：第 %d 行之和期望 %.7g，得到 %.7g", i, ref, got);
+        return;
+      }
+    }
+    std::vector<double> colsum(N, 0);
+    for (int i = 0; i < M; ++i)
+      for (int j = 0; j < N; ++j) colsum[j] += hc[size_t(i) * N + j];
+    for (int j = 0; j < N; ++j) {
+      double ref = 0, mag = 0;
+      for (int k = 0; k < K; ++k) { double b = hb[size_t(k) * N + j]; ref += a1[k] * b; mag += a1abs[k] * std::fabs(b); }
+      if (!(std::fabs(colsum[j] - ref) <= 1e-5 * mag + M * 1e-6)) {
+        hk::fail(R, "大矩阵结果错误：第 %d 列之和期望 %.7g，得到 %.7g", j, ref, colsum[j]);
+        return;
+      }
+    }
   }
+  // 校验 2：每个 32×32 输出块里随机抽 2 个元素做逐元素检查
+  hk::Rng rng(3);
+  for (int ti = 0; ti < M; ti += 32)
+    for (int tj = 0; tj < N; tj += 32)
+      for (int t = 0; t < 2; ++t) {
+        int i = std::min(M - 1, ti + rng.randint(0, 31)), j = std::min(N - 1, tj + rng.randint(0, 31));
+        double ref = 0, mag = 0;
+        for (int k = 0; k < K; ++k) { double p = double(ha[size_t(i) * K + k]) * hb[size_t(k) * N + j]; ref += p; mag += std::fabs(p); }
+        if (!(std::fabs(hc[size_t(i) * N + j] - ref) <= 1e-5 * mag + 1e-6)) {
+          hk::fail(R, "大矩阵结果错误：C[%d][%d] 期望 %.7g，得到 %.7g", i, j, ref, double(hc[size_t(i) * N + j]));
+          return;
+        }
+      }
   if (R.metric < kTiledGflops)
     hk::fail(R, "%.0f GFLOPS，低于目标 %.0f GFLOPS（若机器繁忙，用 rocm-smi 确认后重试）", R.metric, kTiledGflops);
 }
