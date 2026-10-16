@@ -42,13 +42,16 @@ PERF_CASE(lds_bandwidth, 3) {
   double ms = hk::time_best_ms([&] { launch_transpose_lds(in.get(), out.get(), rows, cols, nullptr); });
   R.metric = 2.0 * bytes / (ms * 1e-3) / 1e9;
   R.unit = "GB/s";
-  // 同时抽查结果，防止"什么都不做所以很快"
+  // 计时后在 CPU 上逐元素校验整个输出（6700 万个元素，约 1 s），防止"什么都不做所以很快"或局部漏写
+  if (!out.guards_intact(R)) return;
   auto o = out.download();
-  hk::Rng rng(11);
-  for (int k = 0; k < 100000; ++k) {
-    int r = rng.randint(0, rows - 1), c = rng.randint(0, cols - 1);
-    if (o[size_t(c) * rows + r] != h[size_t(r) * cols + c]) { hk::fail(R, "大矩阵结果错误（行 %d 列 %d）", r, c); return; }
-  }
+  for (int r = 0; r < rows; ++r)
+    for (int c = 0; c < cols; ++c)
+      if (o[size_t(c) * rows + r] != h[size_t(r) * cols + c]) {
+        hk::fail(R, "大矩阵结果错误（行 %d 列 %d）：期望 %.7g，得到 %.7g", r, c, h[size_t(r) * cols + c],
+                 o[size_t(c) * rows + r]);
+        return;
+      }
   if (R.metric < kLdsRatio * copy)
     hk::fail(R, "带宽 %.0f GB/s，低于目标 %.0f GB/s（= %.0f%% × 本次实测拷贝带宽 %.0f GB/s）", R.metric,
              kLdsRatio * copy, kLdsRatio * 100, copy);
