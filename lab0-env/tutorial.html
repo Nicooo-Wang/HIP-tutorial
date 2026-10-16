@@ -112,7 +112,7 @@ Score: 0/6</code></pre>
 <p>还有一类失败信息长这样：</p>
 <pre><code class="language-text">  not_multiple_of_block....................... FAIL (0/2)
     越界写：缓冲区（1000 个元素）之后的哨兵区被改写（距边界 1 字节）</code></pre>
-<p>测试给每个缓冲区的前后各多分配了 256 KiB 的“哨兵区”，整块填满同一个特殊的 32 位值（它是一个 NaN；当作 <code>int</code> 读则是一个约 21 亿的大数）。kernel 结束后逐字节检查哨兵区：若被改写，说明你的代码<strong>写</strong>到了数组范围之外。反过来，如果代码越界<strong>读</strong>到了哨兵值，这个值一旦参与运算（哪怕乘以 0）就会把结果变成 NaN 或明显错误的大数，在逐元素比较时暴露出来。</p>
+<p>测试给每个缓冲区的前后各多分配了 256 KiB 的“哨兵区”，整块填满同一个特殊的 32 位值（它是一个 NaN；当作 <code>int</code> 读则是一个约 21 亿的大数）。kernel 结束后逐字节检查哨兵区：若被改写，说明你的代码<strong>写</strong>到了数组范围之外。反过来，如果代码越界<strong>读</strong>到了哨兵值，这个值一旦当作浮点数参与运算（哪怕乘以 0）就会把结果变成 NaN 或明显错误的大数，在逐元素比较时暴露出来。</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 132" role="img" aria-labelledby="fig12-t">
     <title id="fig12-t">GuardedBuffer：数组前后各有 256 KiB 哨兵区，越界写会改写哨兵区并被检测到</title>

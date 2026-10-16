@@ -612,6 +612,8 @@ table.facts td.src { color: var(--ink-faint); font-size: 0.8125rem; }
   /* 窄屏上 640 宽的示意图整体缩小后字太小：给 SVG 一个最小宽度，图在 figure 内横向滚动（页面本身不出现横向滚动） */
   figure.diagram { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   figure.diagram svg { min-width: 540px; }
+  figure.diagram > figcaption { position: sticky; left: 0; }
+  figure.diagram > figcaption::before { content: "← 图可左右滑动 →"; display: block; margin-bottom: 0.35rem; font-size: 0.75rem; color: var(--ink-faint); text-align: center; letter-spacing: 0.05em; }
   pre { padding: 0.9rem 1rem; font-size: 0.8125rem; border-radius: 6px; }
 }
 

@@ -30,7 +30,7 @@ TEST_CASE(lds_all_shapes, 3) {
 }
 
 // 性能：LDS 版本的有效带宽（读 + 写）需达到同进程 D2D 拷贝带宽的 kLdsRatio。
-// kLdsRatio 已校准：解约 0.34、naive 约 0.064（各 ≥2.2× 余量）。
+// kLdsRatio 已校准：参考解约 0.31–0.35、naive 约 0.062–0.064（墙钟计时）；余量：参考 ≥2.2×，naive ≈2.2×（0.14/0.0627 ≈ 2.23）。
 constexpr double kLdsRatio = 0.14;
 PERF_CASE(lds_bandwidth, 3) {
   const int rows = 8192, cols = 8192;

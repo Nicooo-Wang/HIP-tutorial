@@ -151,7 +151,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
     <tr><th>HBM 峰值带宽（理论）</th><td class="num hl">≈ 5.3 TB/s</td><td class="src">8192 bit × 5.2 Gb/s 每引脚 ÷ 8 = 5325 GB/s，见下方公式</td></tr>
     <tr><th>fp32 向量峰值（理论）</th><td class="num hl">≈ 37.9 TFLOPS</td><td class="src">80 CU × 256 FLOP/周期/CU × 1.85 GHz，见下方公式</td></tr>
     <tr><th>D2D 拷贝带宽（实测）</th><td class="num">≈ 2.0–2.2 TB/s</td><td class="src">hipMemcpy D2D 256 MiB，（读 + 写）字节 ÷ 时间；1 GiB 时 ≈ 1.9 TB/s；不同时刻波动约 10%</td></tr>
-    <tr><th>只读带宽（实测）</th><td class="num">≈ 3–3.5 TB/s</td><td class="src">简单的 float4 grid-stride 只读 kernel，256 MiB–1 GiB</td></tr>
+    <tr><th>只读带宽（实测）</th><td class="num">≈ 3–3.6 TB/s</td><td class="src">简单的 float4 grid-stride 只读 kernel，256 MiB–1 GiB；随尺寸、时刻波动</td></tr>
     <tr><th>fp32 FMA 吞吐（实测）</th><td class="num">≈ 28 TFLOPS</td><td class="src">纯寄存器 FMA 微基准（<code>v_pk_fma_f32</code>），运行中 sclk ≈ 1.39 GHz</td></tr>
   </tbody>
 </table>
@@ -165,7 +165,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
   <p>① <strong>指令和操作数要合适。</strong>每 SIMD 每周期 32 个 FMA 有两条路可达：编译器生成 <code>v_pk_fma_f32</code>（一条指令同时做两个 fp32 FMA）；或者普通的 <code>v_fma_f32</code> 由同一 SIMD 上的两个 wave 在同一周期<em>双发射</em>——这要求每个 SIMD 至少驻留 2 个 wave，并且指令的操作数不能来自标量寄存器（SGPR，例如直接拿 kernel 参数 <code>alpha</code> 当乘数）。本机微基准：操作数全在向量寄存器里的 <code>v_fma_f32</code> 约 26.5 TFLOPS，<code>v_pk_fma_f32</code> 约 28.3 TFLOPS；读 SGPR 操作数的 <code>v_fma_f32</code> 只有约 14 TFLOPS，每个 SIMD 只驻留 1 个 wave 时也只有约一半速率。GEMM 内层乘加的操作数来自 LDS 和寄存器，不打包也能接近全速。② <strong>跑不到最高频率。</strong>本机跑 kernel 时核心频率实测约 1.39–1.42 GHz（<code>rocm-smi --showclocks</code>；与负载大小基本无关，只占 8 个 CU 时也是约 1.42 GHz），所以实测 FMA 吞吐约 28 TFLOPS ≈ 80 × 256 × 1.39 GHz。和理论峰值比较时，记住这两个折扣。</p>
 </div>
 <div class="callout note" data-title="为什么性能用例以“拷贝带宽”为基准">
-  <p>理论 5.3 TB/s 在实践中摸不到：本机实测，显存到显存拷贝（<code>hipMemcpy</code> D2D，读 + 写，由 ROCm 运行时自己的 kernel 完成）约 2.0–2.2 TB/s，一个简单的只读 kernel 约 3–3.5 TB/s，都远低于理论值。Lab 1 的访存类性能用例（a2、a3）以拷贝带宽为“尺子”：先在<em>同一进程</em>里测一次 D2D 拷贝带宽，再要求你的 kernel 达到它的某个比例。机器被别人占用时两者一起变慢，比例仍然公平。注意这只是一种归一化，拷贝带宽<strong>不是上限</strong>：以读为主的 kernel（例如 a3 的归约）完全可以超过它。</p>
+  <p>理论 5.3 TB/s 在实践中摸不到：本机实测，显存到显存拷贝（<code>hipMemcpy</code> D2D，读 + 写，由 ROCm 运行时自己的 kernel 完成）约 2.0–2.2 TB/s，一个简单的只读 kernel 约 3–3.6 TB/s（随尺寸、时刻波动），都远低于理论值。Lab 1 的访存类性能用例（a2、a3）以拷贝带宽为“尺子”：先在<em>同一进程</em>里测一次 D2D 拷贝带宽，再要求你的 kernel 达到它的某个比例。机器被别人占用时两者一起变慢，比例仍然公平。注意这只是一种归一化，拷贝带宽<strong>不是上限</strong>：以读为主的 kernel（例如 a3 的归约）完全可以超过它。</p>
 </div>
 
 <h3 id="s1-4"><span class="sec">§1.4</span>两块天花板：带宽与算力</h3>
@@ -560,7 +560,7 @@ __global__ void reverse_each_block(const float* in, float* out) {
 <p>归约（reduction）把 n 个数合成一个：求和、求最大值、求范数。它是 softmax、layernorm、注意力里必不可少的一步，也是第一个需要线程<em>合作</em>出结果的问题：每个线程只知道自己那部分，答案却要汇总全体。</p>
 
 <h3 id="s4-1"><span class="sec">§4.1</span>两遍归约结构</h3>
-<p>block 内的线程可以通过 LDS + <code>__syncthreads()</code> 合作，但<strong>不同 block 之间没有屏障</strong>：它们可能在不同 CU 上、以任意顺序执行，甚至不会同时存在（block 数多于 GPU 能同时容纳的数量时，后面的 block 要等前面的退出才开始）。所以在普通的 kernel 里，没有现成的屏障能保证“全体 block 都算完部分和之后再汇总”。最直接、最可靠的办法是用<strong>kernel 边界</strong>当全局屏障：同一个 stream 里，第二个 kernel 一定在第一个全部结束之后才开始。（一个 kernel 里也有办法做到，但需要本课还没讲的工具——a3 书面问题 4 请你想一想。）</p>
+<p>block 内的线程可以通过 LDS + <code>__syncthreads()</code> 合作，但<strong>不同 block 之间没有屏障</strong>：它们可能在不同 CU 上、以任意顺序执行，甚至不会同时存在（block 数多于 GPU 能同时容纳的数量时，后面的 block 要等前面的退出才开始）。所以在普通的 kernel 里，没有现成的屏障能保证“全体 block 都算完部分和之后再汇总”。最直接、最可靠的办法是用<strong>kernel 边界</strong>当全局屏障：同一个 stream 里，第二个 kernel 一定在第一个全部结束之后才开始。（一个 kernel 里也有办法做到，但要用到本课只顺带提过的原子操作等工具——a3 书面问题 4 请你想一想。）</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 260" role="img" aria-labelledby="fig41-t">
     <title id="fig41-t">两遍归约：第一遍多个 block 各自用 grid-stride loop 累加并做 block 内归约，写到工作区；第二遍一个 block 汇总工作区</title>
@@ -597,7 +597,7 @@ __global__ void reverse_each_block(const float* in, float* out) {
 </figure>
 <p>a3 的骨架已经写好了这个结构，你要读懂它的每个选择：</p>
 <ul>
-  <li><strong>block 数有上限。</strong><code>blocks = min(⌈n / 256⌉, kMaxBlocks = 1024)</code>。上限来自两点：工作区 ws 只有 4096 个 float；更重要的是，block 数只要能把 80 个 CU 填满（几百个 block）就够了，再多只会让第 2 遍要汇总的部分和变多。</li>
+  <li><strong>block 数有上限。</strong><code>blocks = min(⌈n / 256⌉, kMaxBlocks = 1024)</code>。硬上限来自工作区：ws 只有 4096 个 float，block 数不能超过它。那 block 数取多少合适？光“每个 CU 分到一个 block”是不够的：§1.1 讲过，SIMD 靠在多个驻留的 wave 之间切换来掩盖显存延迟。256 个 block × 4 个 wave ÷ 320 个 SIMD ≈ 每个 SIMD 只有 3 个 wave，读带宽只有拷贝带宽的约 40%；1024 个 block（每个 SIMD 约 13 个 wave 排队，最多同时驻留 8 个）约 67%（见下方的实测）。再往上加，收益就小了，反而让第 2 遍要汇总的部分和变多。</li>
   <li><strong>于是 n 大时线程数不够“一线程一元素”</strong>——这正是 §2.5 的局面。每个线程先用 <strong>grid-stride loop</strong> 把自己负责的所有元素累加到寄存器 <code>acc</code> 里（写法与 a1 Part B 相同，只是循环体从“写 y[i]”变成“累加 in[i]”），然后整个 block 再把 256 个 <code>acc</code> 合成一个数。循环一次都不进的线程，<code>acc</code> 保持 0，对和没有影响。</li>
   <li><strong>每个 block 只由 thread 0 写一次 <code>dst[blockIdx.x]</code></strong>，是“写”不是“加”：ws 和 out 的初值都不可信（测试会填 NaN），不能往里累加。</li>
 </ul>
@@ -866,7 +866,7 @@ __global__ void sum_dist(const float* x, int n, const float* p, int m, float* y)
   <li><strong>资源</strong>：累加器占寄存器，As + Bs 占 LDS。例如 BM = BN = 64、BK = 16：(64 × 16 + 16 × 64) × 4 字节 = 8 KiB LDS。占用太多会降低 occupancy（§2.4）。</li>
 </ul>
 <h4>让累加器真的留在寄存器里</h4>
-<p>TM × TN 个累加器在 C++ 里自然写成一个小数组 <code>float acc[TM][TN]</code>。但 GPU 的寄存器不能按“运行时才知道的下标”寻址：只有编译器在编译期就能确定每一次访问的是 <code>acc</code> 的哪个元素，它才能把每个元素放进一个固定的寄存器。做不到时，编译器只好把整个数组放进 <strong>scratch</strong>（每个线程私有的一块显存，经缓存访问），每次乘加都变成一次访存——结果仍然正确，只是慢很多，判分只会告诉你“性能 FAIL”。要让编译器确定下标，需要两件事：</p>
+<p>TM × TN 个累加器在 C++ 里自然写成一个小数组 <code>float acc[TM][TN]</code>。寄存器数组用“运行时才知道的下标”访问代价很高（gfx942 有专门的间接寻址指令，但慢且限制多），编译器通常会避免这样做：只有在编译期就能确定每一次访问的是 <code>acc</code> 的哪个元素时，它才会稳妥地把每个元素放进一个固定的寄存器。下标或循环边界在编译期未知时，数组常常会被放进 <strong>scratch</strong>（每个线程私有的一块显存，经缓存访问），每次乘加都变成一次访存——结果仍然正确，只是慢很多，判分只会告诉你“性能 FAIL”。要让编译器确定下标，需要两件事：</p>
 <ul>
   <li>TM、TN 和访问 <code>acc</code> 的循环边界都是<strong>编译期常量</strong>（例如 <code>constexpr int TM = 4;</code>），不要用 kernel 参数或其他运行时变量当边界；</li>
   <li>访问 <code>acc</code> 的循环被<strong>完全展开</strong>，展开后每个 <code>acc[i][j]</code> 的 i、j 都是字面常数。边界是常量的小循环在 <code>-O2</code> 下通常会被自动展开；在循环前写 <code>#pragma unroll</code> 可以明确要求展开。</li>
@@ -883,7 +883,7 @@ for (int i = 0; i &lt; TM; ++i)     // 常量边界 + 展开 → acc 留在寄�
 <p>怎么确认？编译时加上 <code>-Rpass-analysis=kernel-resource-usage</code>，hipcc 会为每个 kernel 打印寄存器、scratch 和 LDS 用量（在 <code>lab1-hip-basics/</code> 下运行）：</p>
 <pre><code class="language-bash">/opt/rocm/bin/hipcc -std=c++20 -O2 --offload-arch=gfx942 -c a4-gemm/gemm.hip -o /tmp/gemm.o \
     -Rpass-analysis=kernel-resource-usage</code></pre>
-<p>下面是本机对两个小实验 kernel 的实际输出（节选，省略了每行开头的文件名和行号）：两者都用上面那样的 4 × 4 累加器，<code>acc_const</code> 的循环边界是常量，<code>acc_runtime</code> 的边界是 kernel 参数：</p>
+<p>下面是本机对两个小实验 kernel 的实际输出（只摘了相关的几行，并删掉了每行开头的文件位置和行尾的 <code>[-Rpass-analysis=kernel-resource-usage]</code> 标记）：两者都用上面那样的 4 × 4 累加器，<code>acc_const</code> 的循环边界是常量，<code>acc_runtime</code> 的边界是 kernel 参数：</p>
 <pre><code class="language-text">remark: Function Name: _Z9acc_constPKfS0_Pfi
 remark:     VGPRs: 22
 remark:     ScratchSize [bytes/lane]: 0

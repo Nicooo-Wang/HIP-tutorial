@@ -9,7 +9,7 @@ static void run(hk::Result& R, Fn fn, const char* name, int M, int N, int K, uin
   A.upload(ha); B.upload(hb); C.fill(NAN);
   fn(A.get(), B.get(), C.get(), M, N, K, nullptr);
   auto hc = C.download();
-  // 逐元素误差界：|err| ≤ 1e-5 · Σ_k |a_ik·b_kj| + 1e-6（与求和顺序无关的 fp32 误差上界的宽松版本）
+  // 逐元素误差界：|err| ≤ 1e-5 · Σ_k |a_ik·b_kj| + 1e-6（比随机输入下 fp32 的典型舍入误差 ~√K·u·Σ|ab| 宽松得多，对任何合理的求和顺序都成立；它不是最坏情况的严格上界）
   for (int i = 0; i < M; ++i)
     for (int j = 0; j < N; ++j) {
       double ref = 0, mag = 0;
