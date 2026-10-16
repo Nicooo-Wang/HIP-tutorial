@@ -99,7 +99,7 @@ __global__ void copy4(const float* __restrict__ src, float* __restrict__ dst, in
   </svg>
   <figcaption><b>图 1.1</b>箭头表示“建在……之上”。a1 练的是紫色那层的工具，a2 用的是蓝色那层的四件套。</figcaption>
 </figure>
-<p>另外两个目录本课不用：<code>host/</code> 是主机端辅助（主机张量、计时器、kernel 启动封装），<code>ref/</code> 是参考实现。我们的测试沿用 Lab 0–1 的 <code>harness.hpp</code>，kernel 也像 Lab 1 一样用 <code>&lt;&lt;&lt;…&gt;&gt;&gt;</code> 启动。</p>
+<p>另外几个目录本课不用：<code>host/</code> 是主机端辅助（主机张量、计时器、kernel 启动封装），<code>ref/</code> 是参考实现，<code>utility/</code> 目前只有一个 <code>json_dump.hpp</code>。我们的测试沿用 Lab 0–1 的 <code>harness.hpp</code>，kernel 也像 Lab 1 一样用 <code>&lt;&lt;&lt;…&gt;&gt;&gt;</code> 启动。</p>
 
 <h3 id="s1-3"><span class="sec">§1.3</span>源码地图</h3>
 <p>下面是本课会读到的文件（路径相对于 <code>/opt/rocm/include/ck_tile/</code>，均已在本机核对）。后面每一节都会摘出其中一小段真实源码，标明文件和行号；读不懂的模板参数可以先跳过，带着“它在干什么”去读即可。</p>
@@ -219,7 +219,7 @@ CK_TILE_HOST_DEVICE constexpr bool operator==(sequence&lt;Xs...&gt;, sequence&lt
 {
     return ((Xs == Ys) &amp;&amp; ...);
 }</code></pre>
-  <p>两个 sequence 相等的判断：<code>(Xs == Ys)</code> 里同时出现了两个包，它们按位置<em>同步</em>展开成 <code>(X0 == Y0) &amp;&amp; (X1 == Y1) &amp;&amp; …</code>（两个包长度必须相同）。空 sequence 比较时，<code>&amp;&amp;</code> 的一元折叠给出 true。§2.3 的 <code>static_for</code> 内部则用到了逗号折叠（<code>core/utility/functional.hpp</code> 第 70 行）。</p>
+  <p>两个 sequence 相等的判断：<code>(Xs == Ys)</code> 里同时出现了两个包，它们按位置<em>同步</em>展开成 <code>(X0 == Y0) &amp;&amp; (X1 == Y1) &amp;&amp; …</code>（两个包长度必须相同）。空 sequence 比较时，<code>&amp;&amp;</code> 的一元折叠给出 true。§2.3 的 <code>static_for</code>（最常用的 <code>static_for&lt;0, N, 1&gt;</code> 那个特化）内部则用到了逗号折叠（<code>core/utility/functional.hpp</code> 第 70 行）。</p>
 </div>
 <p class="sec-assign">对应 a1 的 E1（<code>product</code>）。</p>
 
@@ -256,7 +256,7 @@ static_assert(std::is_same_v&lt;decltype(off), const ck_tile::array&lt;index_t, 
   <p>初值列表比数组短时，<code>std::array</code> 把剩下的元素补 0，而 <code>ck_tile::array</code> <strong>用最后一个值补齐</strong>：<code>ck_tile::array&lt;index_t, 4&gt;{1, 2}</code> 是 {1, 2, 2, 2}（见 <code>core/container/array.hpp</code> 第 53–73 行的构造函数和注释 “behavior different from std”）。想要全 0，就写空的 <code>{}</code>，它调用第 52 行的默认构造函数。</p>
 </div>
 <div class="callout pitfall">
-  <p>倒着走的循环 <code>for (i = N - 1; i &gt;= 0; --i)</code> 一定要用<strong>有符号</strong>的下标类型（<code>index_t</code> 就是有符号的 <code>int32_t</code>）。如果写成 <code>size_t</code> 或 <code>unsigned</code>，<code>i &gt;= 0</code> 永远为真，0 再减 1 会绕回一个巨大的数。在 constexpr 求值里这是越界访问，编译器会直接拒绝：本机实测报 <code>constexpr function never produces a constant expression</code>，并附注 <code>cannot refer to element 18446744073709551615 of array of 3 elements</code>。</p>
+  <p>倒着走的循环 <code>for (i = N - 1; i &gt;= 0; --i)</code> 一定要用<strong>有符号</strong>的下标类型（<code>index_t</code> 就是有符号的 <code>int32_t</code>）。如果写成 <code>size_t</code> 或 <code>unsigned</code>，<code>i &gt;= 0</code> 永远为真，0 再减 1 会绕回一个巨大的数。在 constexpr 求值里这是越界访问，编译器会直接拒绝。本机实测，像 E2 这样的函数模板，错误报在调用处：<code>constexpr variable 's' must be initialized by a constant expression</code>（变量名是你调用处的那个变量），下一行附注 <code>cannot refer to element 18446744073709551615 of array of 3 elements in a constant expression</code>。如果下标在用之前先被转成了 <code>index_t</code>，附注里的数字会是 <code>-1</code>。看到这种巨大的数或 -1，就去检查倒序循环的下标类型。</p>
 </div>
 <p><strong>stride 是什么。</strong>多维张量在内存里终究是一维的。一个 D 维张量的元素 (i<sub>0</sub>, i<sub>1</sub>, …) 在内存中的偏移是</p>
 <p class="formula">offset = i<sub>0</sub> × stride<sub>0</sub> + i<sub>1</sub> × stride<sub>1</sub> + … <span class="c">// stride_k：第 k 维坐标加 1 时，偏移加多少</span></p>
@@ -299,7 +299,7 @@ static_assert(sizeof(four) == 1);            // 空对象：运行时不携带�
 <p>所以有两种“用法”要分清：</p>
 <ul>
   <li><strong>当整数用</strong>：<code>out[k]</code>、<code>base + k</code>、<code>2 * k</code>。<code>k</code> 通过转换运算符变成整数参与运算，和普通 <code>int</code> 没区别。</li>
-  <li><strong>当编译期常量用</strong>：模板参数、数组长度、<code>constexpr</code> 变量的初值、<code>static_assert</code>。这时请写 <code>k.value</code>（或 §2.6 的 <code>decltype(k)::value</code>）：<code>value</code> 是 <code>static constexpr</code> 成员，无论 <code>k</code> 这个对象本身是什么，它都是常量表达式。</li>
+  <li><strong>当编译期常量用</strong>：模板参数、数组长度、<code>constexpr</code> 变量的初值、<code>static_assert</code>。这时请写 <code>k.value</code>（或 §2.6 的 <code>decltype(k)::value</code>）：<code>value</code> 是 <code>static constexpr</code> 成员。只要 <code>k</code> 是按值传进来的（像 <code>static_for</code> 的 lambda 参数 <code>auto k</code> 那样），<code>k.value</code> 就是常量表达式；<code>k</code> 是引用参数（<code>const auto&amp; k</code>）时则不行，要从类型里取，§2.6 会专门讲这个坑。</li>
 </ul>
 <p><strong><code>static_for</code></strong> 把一个“函数”对 Begin、Begin+Inc、…（不含 End）各调用一次，并把每次的循环变量以 <code>number&lt;i&gt;{}</code> 的形式传进去。写法是先构造一个对象 <code>static_for&lt;0, N, 1&gt;{}</code>，再用一个 lambda 调用它：</p>
 <p class="formula">ck_tile::static_for&lt;0, 4, 1&gt;{}(f); <span class="c">// ≡ f(number&lt;0&gt;{}); f(number&lt;1&gt;{}); f(number&lt;2&gt;{}); f(number&lt;3&gt;{});</span></p>
@@ -341,7 +341,7 @@ using make_applier = __make_integer_seq&lt;applier, index_t, Size&gt;;
 template &lt;index_t N&gt;
 struct static_for&lt;0, N, 1&gt; : detail::make_applier&lt;N&gt;
 {</code></pre>
-  <p>这是最常用的 <code>static_for&lt;0, N, 1&gt;</code> 的特化：编译器内建的 <code>__make_integer_seq</code> 生成 <code>applier&lt;index_t, 0, 1, …, N-1&gt;</code>，它的 <code>operator()</code> 用<strong>逗号的一元折叠</strong>把 <code>f(number&lt;0&gt;{})</code>、<code>f(number&lt;1&gt;{})</code>…依次调用一遍——§2.1 和本节的知识在这里汇合。没有循环变量、没有跳转，只有 N 次函数调用，内联后就是 N 份展开的代码。</p>
+  <p>这是最常用的 <code>static_for&lt;0, N, 1&gt;</code> 的特化：编译器内建的 <code>__make_integer_seq</code> 生成 <code>applier&lt;index_t, 0, 1, …, N-1&gt;</code>，它的 <code>operator()</code> 用<strong>逗号的一元折叠</strong>把 <code>f(number&lt;0&gt;{})</code>、<code>f(number&lt;1&gt;{})</code>…依次调用一遍——§2.1 和本节的知识在这里汇合。没有循环变量、没有跳转，只有 N 次函数调用，内联后就是 N 份展开的代码。起点不是 0 或步长不是 1 的一般情形走另一条路：第 34 行的 <code>static_for_impl</code> 用 <code>swallow{(f(number&lt;Is&gt;{}), 0)...}</code>——在花括号初始化列表里展开参数包——逐个调用，效果相同。</p>
 </div>
 <p class="sec-assign">对应 a1 的 E3（<code>fill_squares</code>）。</p>
 
@@ -519,7 +519,7 @@ auto vy = make_naive_tensor_view&lt;address_space_enum::global&gt;(
   </tbody>
 </table>
 </div>
-<p>最后两个参数是编译期的“承诺”，默认值 -1 表示不承诺、由 CK-Tile 自己推导。在这个最简单的一维视图上，省略它们时本机生成的指令完全相同；写上它们能让意图一目了然，也是 CK-Tile 内核里常见的写法。</p>
+<p>最后两个参数是编译期的“承诺”，默认值 -1 表示不承诺。注意 naive 视图<strong>不会自己推导</strong>出“可以向量化”：不写这两个参数时，CK-Tile 只能一次访问 1 个元素。本机实测，§3.4 例子的分布下每次访问的元素数（<code>ScalarPerVector</code>）从 4 变成 1，每个线程的访问次数变成原来的 4 倍。在这个最简单的一维例子里，省略后的最终汇编碰巧仍然相同，那是因为编译器后端把相邻的 4 次标量 buffer 访问合并成了一条 <code>dwordx4</code>（看 LLVM IR 能发现 CK-Tile 发出的是一次 1 个 float 的 buffer 访问）。这种合并不能指望：换成二维视图、fp16 或别的长度，就未必发生。所以想要向量访存，就要写上这两个参数，并让它们与分布相符（向量长度怎样确定，见 §3.2 例子后面那段）。</p>
 <div class="callout note" data-title="读源码：core/tensor/tensor_view.hpp 第 461–486 行（节选）">
 <pre><code class="language-cpp">template &lt;address_space_enum BufferAddressSpace = address_space_enum::generic,
           memory_operation_enum DstInMemOp      = memory_operation_enum::set,
@@ -577,11 +577,14 @@ make_naive_tensor_view(DataType* __restrict__ p,
     <text x="535" y="154" font-size="12" text-anchor="middle" style="fill:var(--d-4)">偏移 ≥ range：被屏蔽</text>
     <path d="M440 128 V172" stroke="var(--d-4)" stroke-width="2"/>
     <text x="440" y="188" font-size="11" text-anchor="middle" class="mono">range</text>
-    <text x="10" y="214" font-size="12">硬件按每个元素检查：一个 16 字节向量即使只有一部分越界，越界的那几个元素也会被单独屏蔽（本机实测）。</text>
+    <text x="10" y="214" font-size="12">硬件按 4 字节（dword）检查：16 字节向量部分越界时，越界的 dword 被单独屏蔽（float 即逐元素）。</text>
   </svg>
   <figcaption><b>图 3.2</b>buffer 寻址。这条指令就是 §3.4 例子 kernel 实际生成的第一条读指令（<code>--save-temps</code> 所见）：<code>offen</code> 表示使用 VGPR 中的偏移。整个 wavefront 用 64 × 16 = 1024 个连续字节，正是 Lab 1 §3.1 说的合并访存。</figcaption>
 </figure>
-<p>除了硬件的 range 检查，CK-Tile 在软件层还会为每次访问算一个“这个坐标是否在视图内”的标志（<code>tensor_view.hpp</code> 第 88 行的 <code>coordinate_has_valid_offset_assuming_top_index_is_valid</code>），连同偏移一起交给 buffer view。两层合起来，你在 kernel 里就不需要也不应该写 <code>if (i &lt; n)</code>。至于“越界的读到底返回什么值、越界的写具体怎样被丢掉”，留给 a2 的书面问题 2：到 <code>buffer_view.hpp</code> 里找 <code>address_space_enum::global</code> 那个特化的 <code>get</code> 和 <code>set</code>。</p>
+<div class="callout pitfall" data-title="检查粒度是 4 字节，不是“一个元素”">
+  <p>range 检查以 dword（4 字节）为单位。float 一个元素正好一个 dword，所以本课里“部分越界的向量被逐元素屏蔽”成立。fp16 / bf16（2 字节）、int8（1 字节）这类小类型就不同了：只要一个 dword 有一部分越界，<strong>整个 dword 都被屏蔽，连同其中合法的元素</strong>。本机实测 fp16、每线程 8 个元素的一维视图：n = 505 时，合法的第 504 个元素 load 读回 0、store 没有写进去；n = 506 时一切正常。以后用这类小类型时，总字节数不是 4 的倍数（fp16 即 n 为奇数）的用例要特别留意。</p>
+</div>
+<p>对本课用的 naive 视图，<strong>越界屏蔽完全由这条硬件 range 检查完成</strong>，range 由视图长度 n 决定。CK-Tile 在软件层也会为每次访问算一个“坐标是否有效”的标志（<code>tensor_view.hpp</code> 第 88 行的 <code>coordinate_has_valid_offset_assuming_top_index_is_valid</code>）并交给 buffer view，但注意名字里的 <em>assuming_top_index_is_valid</em>：它<em>假定</em>窗口里的坐标本身在范围内，只检查 pad 这类“合法坐标也可能映射到无效位置”的变换。naive 视图里没有这类变换，这个标志在编译期就是常量 <code>true</code>，会被优化掉（本机汇编里没有为它生成任何比较或选择指令）；以后用到 <code>pad_tensor_view</code> 时它才真正起作用。所以你在 kernel 里不需要也不应该写 <code>if (i &lt; n)</code>，但原因是 buffer 指令，不是软件判断。至于“越界的读到底返回什么值、越界的写具体怎样被丢掉”，留给 a2 的书面问题 2：从 <code>buffer_view.hpp</code> 里 <code>address_space_enum::global</code> 那个特化的 <code>get</code>、<code>set</code> 出发，一路追到 <code>core/arch/amd_buffer_addressing.hpp</code> 里真正发出 buffer 指令的函数。</p>
 <div class="callout note" data-title="读源码：core/arch/amd_buffer_addressing.hpp 第 87–108 行">
 <pre><code class="language-cpp">// 128 bit SGPRs to supply buffer resource in buffer instructions
 // https://rocm-documentation.readthedocs.io/en/latest/GCN_ISA_Manuals/testdocbook.html#vector-memory-buffer-instructions
@@ -607,6 +610,8 @@ CK_TILE_DEVICE int32x4_t make_wave_buffer_resource(const void* ptr,
 }</code></pre>
   <p>8 字节指针 + 4 字节 range + 4 字节配置 = 128 位，正好 4 个 32 位寄存器。<code>range</code> 是 32 位无符号数，所以单个 buffer 视图最多覆盖 4 GiB——本课的数组远小于此。</p>
 </div>
+
+<p class="sec-assign">对应 a2 的 a2-1（构造 <code>vb</code>、<code>vc</code>）。</p>
 
 <h3 id="s3-2"><span class="sec">§3.2</span>tile distribution encoding</h3>
 <p>这是 CK-Tile 最核心、也最需要花时间的概念。问题是：一个 tile 有若干元素，一个 block 有若干线程，<strong>哪个线程拿哪些元素、拿到后放在自己的第几个寄存器里</strong>？Lab 1 用公式回答；CK-Tile 用一个纯编译期的类型 <code>tile_distribution_encoding</code> 回答。它用到四类“维度”：</p>
@@ -706,7 +711,7 @@ constexpr auto dist = make_static_tile_distribution(
   </svg>
   <figcaption><b>图 3.3</b>例子的分布。本机实测（每个线程把 “线程号×100 + 缓冲区下标” 写进自己负责的元素再读回）：线程 0 负责 0–3 与 256–259，线程 1 负责 4–7 与 260–263，……，线程 63 负责 252–255 与 508–511，与图一致。</figcaption>
 </figure>
-<p>为什么这样排？看同一轮里的一条指令：64 个 lane 各取 4 个连续 float（16 字节），lane 之间首尾相接，合起来是 1024 个连续字节——完全合并的访存。CK-Tile 在所有 Y 维中挑一个<strong>在内存里连续（stride 为 1）且最长</strong>的维度做向量访问（<code>core/tensor/tile_window_base.hpp</code> 第 152–170 行），这里就是 Y<sub>1</sub>：它认领的 h<sub>2</sub> 正是 X0 最低位的一段。向量长度取它的长度：4 个 float = 16 字节，正是 a1 E4 里 float 的那个数字。惯例上把这一维放在 Y 的最后，这样它在线程缓冲区里也是连续的。</p>
+<p>为什么这样排？看同一轮里的一条指令：64 个 lane 各取 4 个连续 float（16 字节），lane 之间首尾相接，合起来是 1024 个连续字节——完全合并的访存。CK-Tile 为每个 Y 维算一个“安全向量长度”，再从在内存里连续（stride 为 1）的 Y 维中挑安全向量长度最大的那个做向量访问（<code>core/tensor/tile_window_base.hpp</code> 第 152–170 行）。对认领 X 最低位一段的 Y 维，安全向量长度 = gcd(视图承诺的向量长度, 这一段的长度)，而且视图必须承诺最后一维 stride 为 1——这就是 §3.1 最后两个参数的用处。这里选中的是 Y<sub>1</sub>：它认领的 h<sub>2</sub> 正是 X0 最低位的一段，gcd(4, 4) = 4，即 4 个 float = 16 字节，正是 a1 E4 里 float 的那个数字。本机实测：视图承诺 8 时结果仍是 gcd(8, 4) = 4，承诺 2 时是 2，不承诺时是 1。惯例上把这一维放在 Y 的最后，这样它在线程缓冲区里也是连续的。</p>
 <p>设计一个 encoding 时，可以按这张清单自查：</p>
 <ol>
   <li>每个 X 维的 H 各段之积 = tile 在这一维的长度。</li>
@@ -754,6 +759,8 @@ constexpr auto dist = make_static_tile_distribution(
   <p class="detail-line" data-role="detail" aria-live="polite"></p>
   <figcaption><b>小部件 3.1</b>每个格子是 tile 的一个元素，颜色表示负责它的 wavefront（2 个 P 维时），格内小字是 lane id（格子太小时省略）；粗竖线分隔不同线程的连续块。红框标出“线程 tid”负责的全部元素。切到“1 个 P 维”时 H 变成 (Warps×Lanes, Vec)：只有 lane id 能对上第 0 段坐标的元素有人负责（灰色斜线 = 无人负责），而且每个这样的元素被所有 wavefront 重复负责。</figcaption>
 </figure>
+
+<p class="sec-assign">对应 a2 的 a2-2（encoding）。</p>
 
 <h3 id="s3-3"><span class="sec">§3.3</span>tile window 与原点</h3>
 <p>tensor view 描述整个数组，distribution 描述一个 tile 内部怎么分。<strong>tile window</strong> 把两者接起来：在视图上框出“本 block 负责的那一块”，并记住用哪个分布去访问它。</p>
@@ -807,11 +814,13 @@ note: insert an explicit cast to silence this issue</code></pre>
 </figure>
 <p>一个 kernel 里可以有任意多个窗口。逐元素运算时，所有输入、输出的窗口用同一个原点和同一个分布，于是同一个线程在每个窗口里拿到的都是“相同下标”的元素——这正是 <code>c[i] = a[i] + b[i]</code> 里三个 <code>[i]</code> 相同的含义。（窗口也可以移动：<code>move_tile_window</code> 在后面的 GEMM 里用来沿 K 方向滑动，本课用不到。）</p>
 
+<p class="sec-assign">对应 a2 的 a2-3（窗口原点与 3 个窗口）。</p>
+
 <h3 id="s3-4"><span class="sec">§3.4</span>load_tile / distributed tensor / sweep_tile / store_tile</h3>
 <p>前三件都只是描述。真正搬数据的是这几个函数：</p>
 <ul>
   <li><strong><code>load_tile(window)</code></strong>：按窗口的分布，把本线程负责的元素从显存读进寄存器，返回一个 <strong>distributed tensor</strong>（类型 <code>static_distributed_tensor&lt;T, 分布&gt;</code>）。它是“整个 tile 在所有线程手里的分布式表示”；从单个线程看，它就是一个长度为 ∏Y 的寄存器数组（thread buffer），例子里是 2 × 4 = 8 个 float。</li>
-  <li><strong><code>make_static_distributed_tensor&lt;T&gt;(dist)</code></strong>：按分布创建一个<em>空的</em> distributed tensor（元素类型 T 必须显式写在尖括号里），通常用来装输出。</li>
+  <li><strong><code>make_static_distributed_tensor&lt;T&gt;(dist)</code></strong>：按分布创建一个 distributed tensor（元素类型 T 必须显式写在尖括号里），通常用来装输出。它的寄存器<strong>没有初始化</strong>（不是清零），要先把每个元素写一遍再用。</li>
   <li><strong><code>sweep_tile(t, f)</code></strong>：对本线程持有的<em>每一个</em>元素调用一次 <code>f(idx)</code>。<code>idx</code> 是一个编译期的“分布式下标”（类型里编码了 Y 坐标），用它读 <code>t[idx]</code>、写 <code>t(idx)</code>——与 §2.2 的 array 同一个习惯。同一个 <code>idx</code> 可以用在<strong>任何一个分布相同</strong>的 distributed tensor 上，表示“同一个位置”。</li>
   <li><strong><code>store_tile(window, t)</code></strong>：把 distributed tensor 按窗口的分布写回显存。</li>
 </ul>
@@ -895,7 +904,7 @@ __global__ void scale_kernel(const float* x, float* y, float alpha, index_t n) {
 
   // §3.4 load → 逐元素计算 → store
   auto tx = load_tile(wx);                                 // 本线程的 8 个元素进寄存器
-  auto ty = make_static_distributed_tensor&lt;float&gt;(dist);   // 同一分布的空 tile
+  auto ty = make_static_distributed_tensor&lt;float&gt;(dist);   // 同一分布、未初始化的 tile
   sweep_tile(tx, [&amp;](auto idx) { ty(idx) = alpha * tx[idx]; });
   store_tile(wy, ty);
 }
@@ -911,8 +920,10 @@ buffer_store_dwordx4 v[0:3], v8, s[0:3], 0 offen
 buffer_store_dwordx4 v[4:7], v8, s[0:3], 0 offen offset:1024</code></pre>
 <p>第二轮的地址只是第一轮加上立即数 <code>offset:1024</code>（= 64 lane × 4 float × 4 字节），连地址计算都在编译期折叠掉了。§1.1 那段手写的 <code>if</code>/<code>else</code> 尾部处理在这里不存在：最后一个窗口越界的部分由 buffer 指令屏蔽。</p>
 <div class="callout warn" data-title="例子与 a2 的区别">
-  <p>这个例子的 block 只有 <strong>1 个</strong> wavefront，所以 1 个 P 维正确。a2 的 block 有 <strong>4 个</strong> wavefront（kWarps = 4），照抄这里的 encoding 会掉进 §3.2 的那个坑。动手前先按 §3.2 的清单在纸上画出 a2 的 1024 个元素怎样分给 4 × 64 个线程，或者在小部件 3.1 里用小参数试一试。另外 a2 有两个输入：两个输入窗口各 load 一次，<code>sweep_tile</code> 的同一个 <code>idx</code> 可以同时用来读两个输入 tile、写输出 tile。</p>
+  <p>这个例子的 block 只有 <strong>1 个</strong> wavefront，所以 1 个 P 维正确。a2 的 block 有 <strong>4 个</strong> wavefront（kWarps = 4），照抄这里的 encoding 会掉进 §3.2 的那个坑。动手前先按 §3.2 的清单在纸上画出 a2 的 1024 个元素怎样分给 4 × 64 个线程，或者在小部件 3.1 里用小参数试一试。另外 a2 有两个输入、一个输出：想一想各需要几个窗口、几次 load，以及本节开头关于 <code>idx</code> 的那条规则在这里怎么用。</p>
 </div>
+
+<p class="sec-assign">对应 a2 的 a2-4（load、逐元素相加、store）。</p>
 
 <h3 id="s3-5"><span class="sec">§3.5</span>与 Lab 1 a1 的逐行对照</h3>
 <p>最后把 Lab 1 a1 Part A 的手写 vector add 与 a2 的 CK-Tile 写法放在一起。左列每一项都是你在 Lab 1 亲手写过的；右列说明在 CK-Tile 里它变成了什么、由谁来做。</p>
@@ -929,12 +940,12 @@ buffer_store_dwordx4 v[4:7], v8, s[0:3], 0 offen offset:1024</code></pre>
     <tr><th>边界检查</th><td><code>if (i &lt; n)</code></td><td>不写：视图长度 + buffer 指令越界屏蔽（§3.1）</td></tr>
     <tr><th>读</th><td><code>a[i]</code>、<code>b[i]</code></td><td>对两个输入窗口各 <code>load_tile</code> 一次（§3.4）</td></tr>
     <tr><th>算</th><td><code>a[i] + b[i]</code></td><td><code>sweep_tile</code> 的 lambda 里，用同一个 <code>idx</code> 读、写（§3.4）</td></tr>
-    <tr><th>写</th><td><code>c[i] = …</code></td><td>先建一个同分布的空 tile，算完 <code>store_tile</code>（§3.4）</td></tr>
+    <tr><th>写</th><td><code>c[i] = …</code></td><td>先建一个同分布的 tile，算完 <code>store_tile</code>（§3.4）</td></tr>
     <tr><th>grid 大小</th><td><code>(n + B - 1) / B</code>，B = blockDim.x</td><td><code>(n + kTile - 1) / kTile</code>（a2 骨架已给出）</td></tr>
   </tbody>
 </table>
 </div>
-<p>注意“谁来算”的变化：左列每一行都是运行期的整数运算，写错了要靠测试发现；右列除了窗口原点，全是编译期的类型描述，许多错误（维数不匹配、P 维个数不对、往只读视图写）在编译期就会被拦下。代价是你必须先在纸上想清楚分布——这正是 a2 的核心。</p>
+<p>注意“谁来算”的变化：左列每一行都是运行期的整数运算，写错了要靠测试发现；右列除了窗口原点和视图的指针、长度，全是编译期的类型描述，一部分错误（长度与 stride 个数不一致、P 维个数超出 1–2、往只读视图写）在编译期就会被拦下。但不是全部：在 1 个和 2 个 P 维之间选错，编译器发现不了——§3.2 的那个坑能编译、能运行，只是结果静默出错。代价是你必须先在纸上想清楚分布——这正是 a2 的核心。</p>
 
 <div class="assignment-card" data-assign="a2" data-lab="lab2-cktile-intro" data-path="lab2-cktile-intro/a2-ck-vector-add/ck_vector_add.hip" data-title="用 CK-Tile 写 vector add">
   <p>在已给出的 <code>va</code> 基础上构造 <code>vb</code>、<code>vc</code>（a2-1，§3.1）；写出 6 个模板参数的 <code>tile_distribution_encoding</code>，让 4 个 wavefront × 64 lane × 每线程 4 个 float 恰好覆盖 1024 个元素（a2-2，§3.2）；算出窗口原点并建 3 个窗口（a2-3，§3.3）；load、<code>sweep_tile</code> 逐元素相加、store（a2-4，§3.4）。不要写 <code>if (i &lt; n)</code>。带宽用例要求达到同进程 D2D 拷贝带宽的 55%。</p>
@@ -947,8 +958,8 @@ buffer_store_dwordx4 v[4:7], v8, s[0:3], 0 offen offset:1024</code></pre>
 
 <h3 id="s4-1"><span class="sec">§4.1</span><code>tensor_view.hpp</code></h3>
 <ol class="qlist">
-  <li>第 471–486 行：<code>make_naive_tensor_view</code> 返回的对象由哪两部分组成？buffer view 的“长度”来自 <code>desc.get_element_space_size()</code>。对于一个 rows × cols、但每行间隔 ld（ld &gt; cols）的二维视图，这个长度是 rows × cols 吗？越界屏蔽会因此出现什么“漏网”的情况？</li>
-  <li>第 81–90 行 <code>get_vectorized_elements</code>：它把坐标 <code>coord</code> 拆成了哪几样东西交给 <code>buf_.get</code>？其中哪一样决定“这次访问是否有效”？</li>
+  <li>第 461–486 行：<code>make_naive_tensor_view</code> 返回的对象由哪两部分组成？buffer view 的“长度”来自 <code>desc.get_element_space_size()</code>。对于一个 rows × cols、但每行间隔 ld（ld &gt; cols）的二维视图，这个长度是 rows × cols 吗？越界屏蔽会因此出现什么“漏网”的情况？</li>
+  <li>第 81–90 行 <code>get_vectorized_elements</code>：它把坐标 <code>coord</code> 拆成了哪几样东西交给 <code>buf_.get</code>？其中哪一样决定“这次访问是否有效”？对 naive 视图，它在编译期是什么值（回看 §3.1）？</li>
   <li>第 37–40 行的模板参数 <code>DstInMemOp_</code> 默认是 <code>set</code>。到 <code>core/arch/arch.hpp</code> 第 55–61 行看它还能取哪些值，再找到本文件中用到它的 <code>update_vectorized_elements</code>（第 366 行起）。什么样的算子需要“写回时做原子加”而不是直接覆盖？</li>
 </ol>
 
@@ -956,7 +967,7 @@ buffer_store_dwordx4 v[4:7], v8, s[0:3], 0 offen offset:1024</code></pre>
 <ol class="qlist">
   <li>第 919 行和第 1089 行各有一个 <code>make_tile_window</code>，参数有什么不同？用第 1089 行那种（不带分布）创建的窗口，能直接 <code>load_tile</code> 吗？为什么？</li>
   <li>构造函数（第 66–111 行）在第 78–81 行用 <code>get_partition_index</code>（§2.4 摘过它的实现）和全 0 的 Y 坐标算出了一个坐标，第 83–84 行又加上了 <code>window_origin</code>。这个结果在 Lab 1 里对应你手写的哪个量？它在什么时候算——每次 load 时，还是创建窗口时？</li>
-  <li><code>load</code>（第 236–293 行）里有两层 <code>static_for</code>，内层每次读多少个元素由 <code>Traits::ScalarPerVector</code> 决定（来自 <code>tile_window_base.hpp</code> 第 152–170 行）。对 §3.4 的例子，总共要访问几次？与 §3.4 看到的指令条数对得上吗？</li>
+  <li><code>load_tile(window)</code> 先到第 113–121 行那个不带参数的 <code>load()</code>，再由它调用第 236–293 行的版本。后者有三层 <code>static_for</code>：第 247 行逐个坐标，第 252 行每次迭代发出一条向量访存，第 263 行按 <code>Traits::ScalarPerVector</code>（来自 <code>tile_window_base.hpp</code> 第 152–170 行）把这条向量拆进线程缓冲区。对 §3.4 的例子，总共要访问几次？与 §3.4 看到的指令条数对得上吗？</li>
 </ol>
 
 <h3 id="s4-3"><span class="sec">§4.3</span><code>load_tile.hpp</code></h3>

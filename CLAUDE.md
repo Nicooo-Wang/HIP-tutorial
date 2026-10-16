@@ -31,6 +31,10 @@
 ## CK-Tile 已知坑（实测）
 - `tile_distribution_encoding` 只有 1 个 P 维时，P 只对应 lane id（0–63），整个 block 只有一个 wavefront 生效。block 级分布要用 2 个 P 维（warp id, lane id）。
 - `make_tile_window` 的原点用 `{static_cast<index_t>(blockIdx.x) * Tile}`，否则 unsigned→int 窄化报错。
+- `make_naive_tensor_view` 省略最后两个 guarantee 参数（向量长度、最后一维 stride）时 CK-Tile 不会推导，`ScalarPerVector` = 1，逐元素访问；1D float 例子汇编相同只是后端合并了标量 buffer 访存，不可依赖。
+- buffer 指令越界检查粒度是 4 字节（dword）：fp16/bf16/int8 等小类型在末尾部分越界的 dword 里，合法元素也会读成 0、写被丢弃（fp16 n=505 实测）。
+- naive 视图的越界屏蔽只靠硬件 range（= 线性元素总数），软件 is_valid 标志恒为 true。2D tile 跨行/列边界时线性偏移仍“合法”，会读写到别的行：边缘要用 `pad_tensor_view`（33×31 转置不 pad 实测出错）。
+- 1 个 P 维用在多 wavefront block 上能编译、能运行，只是静默出错（编译期只拦 NDimP ∉ {1,2}）。
 
 ## Tutorial 风格
 - 共用 `common/tutorial.css` / `common/tutorial.js`；左侧目录、代码高亮、SVG 图示、交互小部件、浅色/深色模式；每节末尾标注对应 Assignment。
