@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HIP / CK-Tile 自学课程</title>
+<link rel="stylesheet" href="../common/tutorial.css">
+<script src="../common/tutorial.js"></script>
+</head>
+<body class="site">
+<main class="site-main">
+
+<header class="site-hero">
+  <div>
+    <h1>从 HIP 到 Mega Kernel</h1>
+    <p class="lede">一门在 MI308X 上动手写 GPU kernel 的自学课程。从线程层级和访存讲起，经过 CK-Tile 与 MFMA tiled GEMM，再到多卡通信、通算融合，最后落到 mega kernel 技术。每个概念先在讲义里讲清楚，再用一个能自动判分的作业练一遍。</p>
+    <p class="hw">目标硬件：AMD MI308X（gfx942，80 CU，wavefront 64，LDS 64 KiB / workgroup），ROCm 7.2</p>
+  </div>
+  <svg class="wave-art" viewBox="-1 -1 89 102" role="img" aria-label="一个 wavefront 的 64 个 lane">
+      <rect x="0" y="0" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="11" y="0" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="22" y="0" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="33" y="0" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="44" y="0" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="55" y="0" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="66" y="0" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="77" y="0" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="0" y="11" width="9" height="9" rx="1.5"/>
+      <rect x="11" y="11" width="9" height="9" rx="1.5"/>
+      <rect x="22" y="11" width="9" height="9" rx="1.5"/>
+      <rect x="33" y="11" width="9" height="9" rx="1.5"/>
+      <rect x="44" y="11" width="9" height="9" rx="1.5"/>
+      <rect x="55" y="11" width="9" height="9" rx="1.5"/>
+      <rect x="66" y="11" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="77" y="11" width="9" height="9" rx="1.5"/>
+      <rect x="0" y="22" width="9" height="9" rx="1.5"/>
+      <rect x="11" y="22" width="9" height="9" rx="1.5"/>
+      <rect x="22" y="22" width="9" height="9" rx="1.5"/>
+      <rect x="33" y="22" width="9" height="9" rx="1.5"/>
+      <rect x="44" y="22" width="9" height="9" rx="1.5"/>
+      <rect x="55" y="22" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="66" y="22" width="9" height="9" rx="1.5"/>
+      <rect x="77" y="22" width="9" height="9" rx="1.5"/>
+      <rect x="0" y="33" width="9" height="9" rx="1.5"/>
+      <rect x="11" y="33" width="9" height="9" rx="1.5"/>
+      <rect x="22" y="33" width="9" height="9" rx="1.5"/>
+      <rect x="33" y="33" width="9" height="9" rx="1.5"/>
+      <rect x="44" y="33" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="55" y="33" width="9" height="9" rx="1.5"/>
+      <rect x="66" y="33" width="9" height="9" rx="1.5"/>
+      <rect x="77" y="33" width="9" height="9" rx="1.5"/>
+      <rect x="0" y="44" width="9" height="9" rx="1.5"/>
+      <rect x="11" y="44" width="9" height="9" rx="1.5"/>
+      <rect x="22" y="44" width="9" height="9" rx="1.5"/>
+      <rect x="33" y="44" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="44" y="44" width="9" height="9" rx="1.5"/>
+      <rect x="55" y="44" width="9" height="9" rx="1.5"/>
+      <rect x="66" y="44" width="9" height="9" rx="1.5"/>
+      <rect x="77" y="44" width="9" height="9" rx="1.5"/>
+      <rect x="0" y="55" width="9" height="9" rx="1.5"/>
+      <rect x="11" y="55" width="9" height="9" rx="1.5"/>
+      <rect x="22" y="55" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="33" y="55" width="9" height="9" rx="1.5"/>
+      <rect x="44" y="55" width="9" height="9" rx="1.5"/>
+      <rect x="55" y="55" width="9" height="9" rx="1.5"/>
+      <rect x="66" y="55" width="9" height="9" rx="1.5"/>
+      <rect x="77" y="55" width="9" height="9" rx="1.5"/>
+      <rect x="0" y="66" width="9" height="9" rx="1.5"/>
+      <rect x="11" y="66" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="22" y="66" width="9" height="9" rx="1.5"/>
+      <rect x="33" y="66" width="9" height="9" rx="1.5"/>
+      <rect x="44" y="66" width="9" height="9" rx="1.5"/>
+      <rect x="55" y="66" width="9" height="9" rx="1.5"/>
+      <rect x="66" y="66" width="9" height="9" rx="1.5"/>
+      <rect x="77" y="66" width="9" height="9" rx="1.5"/>
+      <rect x="0" y="77" width="9" height="9" rx="1.5" class="on"/>
+      <rect x="11" y="77" width="9" height="9" rx="1.5"/>
+      <rect x="22" y="77" width="9" height="9" rx="1.5"/>
+      <rect x="33" y="77" width="9" height="9" rx="1.5"/>
+      <rect x="44" y="77" width="9" height="9" rx="1.5"/>
+      <rect x="55" y="77" width="9" height="9" rx="1.5"/>
+      <rect x="66" y="77" width="9" height="9" rx="1.5"/>
+      <rect x="77" y="77" width="9" height="9" rx="1.5" class="on"/>
+      <text x="0" y="98">wave64 · lane 0–63</text>
+  </svg>
+</header>
+
+<section class="site-section" aria-labelledby="how">
+  <h2 id="how">怎么学</h2>
+  <p>每个 Lab 都按同一个节奏走。讲义里每节末尾的工单会告诉你：现在可以去做哪一题。</p>
+  <ol class="loop">
+    <li><b>读讲义</b><span>打开 Lab 的 <code>tutorial.html</code>，跟着图示和小部件把概念弄懂。</span></li>
+    <li><b>做作业</b><span>在 <code>aK-*/</code> 里补全 <code>// TODO</code>，卡住时按顺序看 README 里的 Hint。</span></li>
+    <li><b>判分</b><span>在 Lab 目录运行 <code>make grade</code>，看正确性与性能用例是否全部通过。</span></li>
+  </ol>
+</section>
+
+<section class="site-section" aria-labelledby="labs">
+  <h2 id="labs">课程目录</h2>
+  <p>Lab 按顺序排列，后面的作业只用到前面讲过的概念。</p>
+  <ol class="lab-track">
+    <li class="lab">
+      <span class="lab-num" aria-hidden="true">0</span>
+      <a class="lab-card" href="../lab0-env/tutorial.html">
+        <p class="lab-title">环境与工具</p>
+        <p class="lab-topics">ROCm 工具链、hipcc 编译、查询 GPU 参数、判分流程走一遍。</p>
+        <div class="lab-foot"><span>lab0-env</span><span class="go">打开讲义</span></div>
+      </a>
+    </li>
+    <li class="lab">
+      <span class="lab-num" aria-hidden="true">1</span>
+      <a class="lab-card" href="../lab1-hip-basics/tutorial.html">
+        <p class="lab-title">HIP 基础</p>
+        <p class="lab-topics">线程层级、全局访存与合并、LDS、并行归约、朴素与分块 GEMM。</p>
+        <div class="lab-foot"><span>lab1-hip-basics</span><span class="go">打开讲义</span></div>
+      </a>
+    </li>
+    <li class="lab">
+      <span class="lab-num" aria-hidden="true">2</span>
+      <a class="lab-card" href="../lab2-cktile-intro/tutorial.html">
+        <p class="lab-title">C++ 速成 + CK-Tile 入门</p>
+        <p class="lab-topics">读懂 CK-Tile 需要的模板、constexpr 与编译期序列，写第一个 CK-Tile kernel。</p>
+        <div class="lab-foot"><span>lab2-cktile-intro</span><span class="go">打开讲义</span></div>
+      </a>
+    </li>
+    <li class="lab">
+      <span class="lab-num" aria-hidden="true">3</span>
+      <a class="lab-card" href="../lab3-cktile-concepts/tutorial.html">
+        <p class="lab-title">CK-Tile 核心概念</p>
+        <p class="lab-topics">layout、tile distribution、tile window，以及用它们重写归约。</p>
+        <div class="lab-foot"><span>lab3-cktile-concepts</span><span class="go">打开讲义</span></div>
+      </a>
+    </li>
+    <li class="lab soon">
+      <span class="lab-num" aria-hidden="true">4</span>
+      <div class="lab-card">
+        <p class="lab-title">MFMA 与 tiled GEMM<span class="tag-soon">即将推出</span></p>
+        <p class="lab-topics">用矩阵核心指令 MFMA 搭出分块 GEMM，理解寄存器里的数据排布。</p>
+      </div>
+    </li>
+    <li class="lab soon">
+      <span class="lab-num" aria-hidden="true">5</span>
+      <div class="lab-card">
+        <p class="lab-title">GEMM 进阶<span class="tag-soon">即将推出</span></p>
+        <p class="lab-topics">软件流水线隐藏访存延迟，并扩展到一次处理多个问题的 Grouped GEMM。</p>
+      </div>
+    </li>
+    <li class="lab soon">
+      <span class="lab-num" aria-hidden="true">6</span>
+      <div class="lab-card">
+        <p class="lab-title">多卡通信基础<span class="tag-soon">即将推出</span></p>
+        <p class="lab-topics">P2P 与 IPC 显存访问、RCCL 集合通信，以及 all-to-all 的实现方式。</p>
+      </div>
+    </li>
+    <li class="lab soon">
+      <span class="lab-num" aria-hidden="true">7</span>
+      <div class="lab-card">
+        <p class="lab-title">通算融合<span class="tag-soon">即将推出</span></p>
+        <p class="lab-topics">把 Grouped GEMM 与 all-to-all 放进同一条流水，让计算掩盖通信。</p>
+      </div>
+    </li>
+    <li class="lab soon">
+      <span class="lab-num" aria-hidden="true">8</span>
+      <div class="lab-card">
+        <p class="lab-title">Mega kernel 技术<span class="tag-soon">即将推出</span></p>
+        <p class="lab-topics">用一个常驻 kernel 调度多个阶段：任务队列、跨 workgroup 同步与依赖管理。</p>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<footer class="site-footer">
+  <p>讲义均为本地静态页面，直接用浏览器打开即可。作业判分在各 Lab 目录下运行 <code>make grade</code>。</p>
+</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<!--
+  Lab 讲义模板 —— 复制到 labN-<name>/tutorial.html 后修改。
+  约定（详见 common/tutorial.css 与 common/tutorial.js）：
+    · <body class="tut"> → <nav class="toc">（JS 按 h2[id]/h3[id] 自动生成）+ <main class="content">
+    · 节号写在标题里：<h2 id="s2"><span class="sec">§2</span>标题</h2>
+    · 组件：.callout.note / .callout.warn / .callout.pitfall、.assignment-card[data-assign]、
+      figure.diagram（内联 SVG，颜色只用 var(--d-*) 等 CSS 变量）、.widget[data-widget]、.kbd、table.facts
+    · 代码：<pre><code class="language-cpp">…</code></pre>（cpp / bash），记得把 < > & 转义
+    · 交互：页面脚本里 TUT.registerWidget("name", function (el) { … })
+  路径 ../common/ 对 labN-*/tutorial.html 与本模板（位于 common/）都成立。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab N · 讲义模板</title>
+<link rel="stylesheet" href="../common/tutorial.css">
+<script src="../common/tutorial.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+</head>
+<body class="tut">
+
+<nav class="toc">
+  <a class="toc-home" href="../site/index.html">← 课程目录</a>
+  <p class="toc-title">Lab N：讲义模板</p>
+</nav>
+
+<main class="content">
+
+<header class="doc-header">
+  <p class="doc-kicker">Lab N · 组件示例</p>
+  <h1>讲义模板：每种组件各一个</h1>
+  <p class="doc-lede">这一页是后续所有 Lab 讲义的起点。复制它，替换正文，保留结构与 class 名。下面用真实的 HIP 话题演示每个组件长什么样、该在什么时候用。</p>
+  <p class="doc-meta">预计阅读 15 分钟 · 对应 Assignment a1、a2</p>
+</header>
+
+<h2 id="s1"><span class="sec">§1</span>正文与行内元素</h2>
+<p>正文使用 Noto Sans SC，行宽约 38 个汉字，适合长时间阅读。行内代码写作 <code>hipLaunchKernelGGL</code> 或 <code>threadIdx.x</code>；需要<em>着重</em>的词用着重号而不是斜体；按键写作 <span class="kbd">Ctrl</span> + <span class="kbd">C</span>。</p>
+<p>链接用硅片青色，例如 <a href="https://rocm.docs.amd.com/projects/HIP/en/latest/">HIP 官方文档</a>。</p>
+
+<h3 id="s1-1"><span class="sec">§1.1</span>列表</h3>
+<ul>
+  <li>一个 <strong>wavefront</strong> 有 64 个 lane，同步执行同一条指令。</li>
+  <li>一个 workgroup 最多 1024 个线程，即最多 16 个 wavefront。</li>
+</ul>
+
+<h2 id="s2"><span class="sec">§2</span>代码块</h2>
+<p>C++ / HIP 代码用 <code>language-cpp</code>。注释里的 <code>TODO(aK-n)</code> 与“你的代码”标记会被自动标亮：</p>
+<pre><code class="language-cpp">#include &lt;hip/hip_runtime.h&gt;
+
+// 每个线程处理一个元素：c[i] = a[i] + b[i]
+__global__ void vector_add(const float* a, const float* b, float* c, int n) {
+    // TODO(a1-1): 计算全局线程编号 i（讲义 §2）
+    // &gt;&gt;&gt; 你的代码 &lt;&lt;&lt;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i &lt; n) {
+        c[i] = a[i] + b[i];
+    }
+}
+
+int main() {
+    constexpr int kBlock = 256;
+    int n = 1 &lt;&lt; 20;
+    dim3 grid((n + kBlock - 1) / kBlock);
+    vector_add&lt;&lt;&lt;grid, kBlock&gt;&gt;&gt;(d_a, d_b, d_c, n);
+    return 0;
+}</code></pre>
+<p>命令行用 <code>language-bash</code>：</p>
+<pre><code class="language-bash"># 在 Lab 目录下判分
+cd lab1-hip-basics
+make grade A=a1        # 只判 a1
+make run A=a1 CASE=n1  # 编译并直接运行某个用例</code></pre>
+
+<h2 id="s3"><span class="sec">§3</span>Callout</h2>
+<div class="callout note">
+  <p>说明类：补充背景知识，不读也不影响主线。例如 HIP 的 <code>blockDim</code> 对应 CUDA 的同名变量。</p>
+</div>
+<div class="callout warn">
+  <p>注意类：容易误解但不至于出错的地方。例如 AMD 的 wavefront 是 64 lane，不是 CUDA 的 32。</p>
+</div>
+<div class="callout pitfall">
+  <p>常见坑：真的会让结果出错的地方。例如忘记边界检查 <code>if (i &lt; n)</code>，当 n 不是 blockDim 的整数倍时会越界写。</p>
+</div>
+<div class="callout note" data-title="为什么这样设计">
+  <p>用 <code>data-title</code> 可以自定义标题。</p>
+</div>
+
+<h2 id="s4"><span class="sec">§4</span>图示</h2>
+<p>图示用内联 SVG，颜色只用 CSS 变量（<code>var(--d-1)</code> 到 <code>var(--d-5)</code>、对应的 <code>-soft</code> 浅色、<code>--d-stroke</code>、<code>--d-text</code>、<code>--d-muted</code>），这样切换深色模式时自动适配。</p>
+<figure class="diagram">
+  <svg viewBox="0 0 640 210" role="img" aria-labelledby="fig1-t">
+    <title id="fig1-t">一个 256 线程的 workgroup 由 4 个 wavefront 组成</title>
+    <rect x="10" y="20" width="620" height="120" rx="8" fill="none" stroke="var(--d-stroke)" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="22" y="40" font-size="13" font-weight="700">workgroup（blockDim.x = 256）</text>
+    <g font-size="12">
+      <rect x="26" y="56" width="140" height="66" rx="5" fill="var(--d-1-soft)" stroke="var(--d-1)" stroke-width="1.5"/>
+      <text x="96" y="85" text-anchor="middle" font-weight="700">wavefront 0</text>
+      <text x="96" y="105" text-anchor="middle" class="mono" font-size="11">lane 0–63</text>
+      <rect x="176" y="56" width="140" height="66" rx="5" fill="var(--d-1-soft)" stroke="var(--d-1)" stroke-width="1.5"/>
+      <text x="246" y="85" text-anchor="middle" font-weight="700">wavefront 1</text>
+      <text x="246" y="105" text-anchor="middle" class="mono" font-size="11">线程 64–127</text>
+      <rect x="326" y="56" width="140" height="66" rx="5" fill="var(--d-1-soft)" stroke="var(--d-1)" stroke-width="1.5"/>
+      <text x="396" y="85" text-anchor="middle" font-weight="700">wavefront 2</text>
+      <text x="396" y="105" text-anchor="middle" class="mono" font-size="11">线程 128–191</text>
+      <rect x="476" y="56" width="140" height="66" rx="5" fill="var(--d-4-soft)" stroke="var(--d-4)" stroke-width="1.5"/>
+      <text x="546" y="85" text-anchor="middle" font-weight="700">wavefront 3</text>
+      <text x="546" y="105" text-anchor="middle" class="mono" font-size="11">线程 192–255</text>
+    </g>
+    <rect x="10" y="158" width="620" height="40" rx="6" fill="var(--d-2-soft)" stroke="var(--d-2)" stroke-width="1.5"/>
+    <text x="320" y="183" text-anchor="middle" font-size="13">LDS（每个 workgroup 最多 64 KiB，组内所有 wavefront 共享）</text>
+    <path d="M96 122 V158 M246 122 V158 M396 122 V158 M546 122 V158" stroke="var(--d-muted)" stroke-width="1.2" stroke-dasharray="3 3"/>
+  </svg>
+  <figcaption><b>图 4.1</b>一个 256 线程的 workgroup 被硬件切成 4 个 wavefront；红色标出的是示例中“最后一个”wavefront。</figcaption>
+</figure>
+
+<h2 id="s5"><span class="sec">§5</span>交互小部件</h2>
+<p>小部件挂载点是 <code>.widget[data-widget="名字"]</code>，由页面底部脚本注册。下面拖动滑块改变 <code>blockDim.x</code>，看一个 workgroup 被切成多少个 wavefront：</p>
+<figure class="widget" data-widget="wave-split">
+  <div class="widget-head"><b>workgroup 与 wavefront</b><span class="hint">拖动滑块</span></div>
+  <div class="widget-controls">
+    <label>blockDim.x <input type="range" min="64" max="1024" step="64" value="256" data-role="block"></label>
+    <span>= <output data-role="waves">4</output> 个 wavefront</span>
+  </div>
+  <svg data-role="grid" viewBox="0 0 640 90" role="img" aria-label="wavefront 方格"></svg>
+  <figcaption><b>小部件 5.1</b>每个方格是一个 wavefront（64 个 lane）。上限 1024 线程 = 16 个 wavefront。</figcaption>
+</figure>
+
+<h2 id="s6"><span class="sec">§6</span>硬件参数表</h2>
+<div class="table-wrap">
+<table class="facts">
+  <caption>MI308X（gfx942）关键参数，本机实测</caption>
+  <thead><tr><th>参数</th><th class="num">数值</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr><th>Compute Unit（CU）</th><td class="num">80</td><td class="src">hipDeviceProp_t::multiProcessorCount</td></tr>
+    <tr><th>wavefront 宽度</th><td class="num">64</td><td class="src">warpSize</td></tr>
+    <tr><th>workgroup 最大线程数</th><td class="num">1024</td><td class="src">maxThreadsPerBlock</td></tr>
+    <tr><th>LDS / workgroup</th><td class="num">64 KiB</td><td class="src">sharedMemPerBlock</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="s7"><span class="sec">§7</span>Assignment 工单</h2>
+<p>每节末尾放一张工单，告诉读者“现在可以去做哪一题”。JS 会根据 <code>data-assign</code>、<code>data-lab</code>、<code>data-path</code>、<code>data-title</code> 生成标题、文件路径和判分命令；卡片里原有的内容作为任务简述。</p>
+<div class="assignment-card" data-assign="a2" data-lab="lab1-hip-basics" data-path="lab1-hip-basics/a2-vector-add/vector_add.hip" data-title="向量加法">
+  <p>补全 kernel 中的全局线程编号与边界检查，让任意长度 n（包括 1 和非 256 整数倍）都能算对。</p>
+</div>
+<p class="sec-assign">本节对应 <a href="#s7">Assignment a2</a>。</p>
+
+<footer class="doc-footer">
+  <p><a href="../site/index.html">返回课程目录</a></p>
+</footer>
+
+</main>
+
+<script>
+TUT.registerWidget("wave-split", function (el) {
+  var slider = el.querySelector('[data-role="block"]');
+  var out = el.querySelector('[data-role="waves"]');
+  var grid = el.querySelector('[data-role="grid"]');
+  function draw() {
+    var threads = Number(slider.value);
+    var waves = Math.ceil(threads / 64);
+    out.textContent = waves;
+    while (grid.firstChild) grid.removeChild(grid.firstChild);
+    var cell = 36, gap = 4, x0 = 4, y0 = 6;
+    for (var w = 0; w < waves; w++) {
+      var x = x0 + w * (cell + gap);
+      TUT.svg("rect", { x: x, y: y0, width: cell, height: cell, rx: 4,
+        fill: "var(--d-1-soft)", stroke: "var(--d-1)", "stroke-width": 1.5 }, grid);
+      var t = TUT.svg("text", { x: x + cell / 2, y: y0 + cell / 2 + 4, "text-anchor": "middle", "font-size": 11 }, grid);
+      t.textContent = w;
+    }
+    var label = TUT.svg("text", { x: x0, y: y0 + cell + 30, "font-size": 12, style: "fill: var(--d-muted)" }, grid);
+    label.textContent = threads + " 线程 ÷ 64 = " + waves + " 个 wavefront";
+  }
+  slider.addEventListener("input", draw);
+  draw();
+});
+</script>
+</body>
+</html>
