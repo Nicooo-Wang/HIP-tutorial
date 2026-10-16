@@ -13,7 +13,7 @@
   --paper-raised: #fbfcf9;   /* 抬升面：卡片、表格 */
   --ink: #1d2328;            /* 正文 */
   --ink-soft: #4a535b;       /* 次要文字 */
-  --ink-faint: #7b848b;      /* 注释、元信息 */
+  --ink-faint: #626b72;      /* 注释、元信息（浅底对比度 ≥ 4.5:1） */
   --rule: #d8ddd5;           /* 分隔线 */
   --rule-strong: #b9c0b6;
   --grid: rgba(11, 110, 105, 0.07);
@@ -39,7 +39,7 @@
   --hl-type: #0b6e69;
   --hl-string: #8a4a00;
   --hl-number: #a3341e;
-  --hl-comment: #6f7a72;
+  --hl-comment: #5c675f;
   --hl-func: #2b5c9e;
   --hl-meta: #a3341e;
 
@@ -68,6 +68,8 @@
   --toc-w: 16rem;
 }
 
+/* 深色 token 有两份完全相同的副本：跟随系统（此处）与手动切换 :root[data-theme="dark"]（下方）。
+   纯 CSS 无法在不引入构建步骤的前提下复用同一块声明——修改任一处时，务必同步另一处。 */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
@@ -119,6 +121,7 @@
   }
 }
 
+/* 手动深色：与上方 prefers-color-scheme 块保持同步（keep in sync） */
 :root[data-theme="dark"] {
   color-scheme: dark;
   --paper: #171c21;
@@ -554,6 +557,9 @@ table.facts td.src { color: var(--ink-faint); font-size: 0.8125rem; }
 
 /* ---------- 窄屏 ---------- */
 @media (max-width: 960px) {
+  /* 顶部吸附目录条约 3rem 高：跳转锚点时留出空间，避免标题被遮住 */
+  html { scroll-padding-top: 0; } /* 只用标题的 scroll-margin，避免两者叠加留白过大 */
+  h2, h3, h4 { scroll-margin-top: 4.5rem; }
   body.tut { display: block; }
   .toc {
     position: sticky;

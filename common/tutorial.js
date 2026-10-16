@@ -67,6 +67,14 @@
     return (h.textContent || "").replace(/\s+/g, " ").trim();
   }
 
+  // 返回去掉 .sec 节号后的标题副本（.sec 可以嵌套在任意层级，找不到也不报错）
+  function withoutSec(h) {
+    var c = h.cloneNode(true);
+    var s = c.querySelector(".sec");
+    if (s && s.parentNode) s.parentNode.removeChild(s);
+    return c;
+  }
+
   function buildToc() {
     var nav = document.querySelector("nav.toc");
     var content = document.querySelector("main.content") || document.body;
@@ -98,9 +106,7 @@
         sp.className = "sec";
         sp.textContent = sec.textContent.trim();
         a.appendChild(sp);
-        var rest = h.cloneNode(true);
-        rest.removeChild(rest.querySelector(".sec"));
-        a.appendChild(document.createTextNode(headingText(rest)));
+        a.appendChild(document.createTextNode(headingText(withoutSec(h))));
       } else {
         a.textContent = headingText(h);
       }
@@ -108,7 +114,7 @@
         nav.classList.remove("open");
         toggle.setAttribute("aria-expanded", "false");
       });
-      a.setAttribute("data-label", (sec ? sec.textContent.trim() + " " : "") + headingText(sec ? (function () { var c = h.cloneNode(true); c.removeChild(c.querySelector(".sec")); return c; })() : h));
+      a.setAttribute("data-label", (sec ? sec.textContent.trim() + " " : "") + headingText(sec ? withoutSec(h) : h));
       li.appendChild(a);
       list.appendChild(li);
       links.push(a);
@@ -345,10 +351,11 @@
   }
 
   function mountAll(name) {
-    var sel = name ? '.widget[data-widget="' + name + '"]' : ".widget[data-widget]";
-    Array.prototype.forEach.call(document.querySelectorAll(sel), function (el) {
+    // 遍历比较属性值，而不是把 name 拼进选择器（name 含引号等字符也安全）
+    Array.prototype.forEach.call(document.querySelectorAll(".widget[data-widget]"), function (el) {
       var n = el.getAttribute("data-widget");
-      if (registry[n]) mount(n, el);
+      if (name !== undefined && n !== name) return;
+      if (Object.prototype.hasOwnProperty.call(registry, n)) mount(n, el);
     });
   }
 
@@ -367,14 +374,21 @@
     return n;
   }
 
+  // 每一步独立 try/catch：任何一步出错都不影响其余功能（例如目录失败时代码高亮、工单、小部件照常工作）
+  function step(label, fn) {
+    try { return fn(); }
+    catch (e) { console.error("[TUT] " + label + " 失败：", e); return null; }
+  }
+
   function init() {
     if (ready) return;
-    buildThemeToggle();
-    trackActive(buildToc());
-    setupCode();
-    setupAssignments();
     ready = true;
-    mountAll();
+    step("主题切换按钮", buildThemeToggle);
+    var toc = step("生成目录", buildToc);
+    step("目录滚动高亮", function () { trackActive(toc); });
+    step("代码高亮", setupCode);
+    step("Assignment 工单", setupAssignments);
+    step("交互小部件", function () { mountAll(); });
   }
 
   window.TUT = { registerWidget: registerWidget, svg: svg, copyText: copyText };

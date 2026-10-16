@@ -9,6 +9,12 @@
     · 代码：<pre><code class="language-cpp">…</code></pre>（cpp / bash），记得把 < > & 转义
     · 交互：页面脚本里 TUT.registerWidget("name", function (el) { … })
   路径 ../common/ 对 labN-*/tutorial.html 与本模板（位于 common/）都成立。
+  必须遵守的约定：
+    1. tutorial.js 放在 <head> 中，且不加 defer/async（尽早应用主题，页面脚本可直接调用 TUT）；
+       highlight.js 用 defer 加载即可，加载失败时代码以纯文本显示。
+    2. 每个 Lab 页保留 <footer class="doc-footer"> 中的“返回课程目录”链接（窄屏下侧栏的返回链接会被隐藏）。
+    3. 注册小部件的 <script> 放在 </main> 之后、</body> 之前。
+    4. table.facts 中的硬件数值由各 Lab 作者在本机重新实测后填写，不要照抄模板。
 -->
 <html lang="zh-CN">
 <head>
@@ -96,7 +102,7 @@ make run A=a1 CASE=n1  # 编译并直接运行某个用例</code></pre>
     <g font-size="12">
       <rect x="26" y="56" width="140" height="66" rx="5" fill="var(--d-1-soft)" stroke="var(--d-1)" stroke-width="1.5"/>
       <text x="96" y="85" text-anchor="middle" font-weight="700">wavefront 0</text>
-      <text x="96" y="105" text-anchor="middle" class="mono" font-size="11">lane 0–63</text>
+      <text x="96" y="105" text-anchor="middle" class="mono" font-size="11">线程 0–63</text>
       <rect x="176" y="56" width="140" height="66" rx="5" fill="var(--d-1-soft)" stroke="var(--d-1)" stroke-width="1.5"/>
       <text x="246" y="85" text-anchor="middle" font-weight="700">wavefront 1</text>
       <text x="246" y="105" text-anchor="middle" class="mono" font-size="11">线程 64–127</text>
@@ -111,7 +117,7 @@ make run A=a1 CASE=n1  # 编译并直接运行某个用例</code></pre>
     <text x="320" y="183" text-anchor="middle" font-size="13">LDS（每个 workgroup 最多 64 KiB，组内所有 wavefront 共享）</text>
     <path d="M96 122 V158 M246 122 V158 M396 122 V158 M546 122 V158" stroke="var(--d-muted)" stroke-width="1.2" stroke-dasharray="3 3"/>
   </svg>
-  <figcaption><b>图 4.1</b>一个 256 线程的 workgroup 被硬件切成 4 个 wavefront；红色标出的是示例中“最后一个”wavefront。</figcaption>
+  <figcaption><b>图 4.1</b>一个 256 线程的 workgroup 被硬件切成 4 个 wavefront，每个 wavefront 内部的 lane 编号都是 0–63；红色标出的是示例中“最后一个”wavefront。</figcaption>
 </figure>
 
 <h2 id="s5"><span class="sec">§5</span>交互小部件</h2>
@@ -122,14 +128,14 @@ make run A=a1 CASE=n1  # 编译并直接运行某个用例</code></pre>
     <label>blockDim.x <input type="range" min="64" max="1024" step="64" value="256" data-role="block"></label>
     <span>= <output data-role="waves">4</output> 个 wavefront</span>
   </div>
-  <svg data-role="grid" viewBox="0 0 640 90" role="img" aria-label="wavefront 方格"></svg>
+  <svg data-role="grid" viewBox="0 0 328 112" role="img" aria-label="wavefront 方格" style="max-width: 26rem"></svg>
   <figcaption><b>小部件 5.1</b>每个方格是一个 wavefront（64 个 lane）。上限 1024 线程 = 16 个 wavefront。</figcaption>
 </figure>
 
 <h2 id="s6"><span class="sec">§6</span>硬件参数表</h2>
 <div class="table-wrap">
 <table class="facts">
-  <caption>MI308X（gfx942）关键参数，本机实测</caption>
+  <caption>MI308X（gfx942）关键参数，本机实测<!-- 各 Lab 作者须在本机用 hipGetDeviceProperties 重新实测后填写 --></caption>
   <thead><tr><th>参数</th><th class="num">数值</th><th>备注</th></tr></thead>
   <tbody>
     <tr><th>Compute Unit（CU）</th><td class="num">80</td><td class="src">hipDeviceProp_t::multiProcessorCount</td></tr>
@@ -163,16 +169,22 @@ TUT.registerWidget("wave-split", function (el) {
     var waves = Math.ceil(threads / 64);
     out.textContent = waves;
     while (grid.firstChild) grid.removeChild(grid.firstChild);
-    var cell = 36, gap = 4, x0 = 4, y0 = 6;
+    // 每行 8 个方格：窄屏上也不会被缩得太小
+    var cell = 36, gap = 4, x0 = 4, y0 = 6, cols = 8;
+    var rows = Math.ceil(waves / cols);
     for (var w = 0; w < waves; w++) {
-      var x = x0 + w * (cell + gap);
-      TUT.svg("rect", { x: x, y: y0, width: cell, height: cell, rx: 4,
+      var x = x0 + (w % cols) * (cell + gap);
+      var y = y0 + Math.floor(w / cols) * (cell + gap);
+      TUT.svg("rect", { x: x, y: y, width: cell, height: cell, rx: 4,
         fill: "var(--d-1-soft)", stroke: "var(--d-1)", "stroke-width": 1.5 }, grid);
-      var t = TUT.svg("text", { x: x + cell / 2, y: y0 + cell / 2 + 4, "text-anchor": "middle", "font-size": 11 }, grid);
+      var t = TUT.svg("text", { x: x + cell / 2, y: y + cell / 2 + 4, "text-anchor": "middle", "font-size": 11 }, grid);
       t.textContent = w;
     }
-    var label = TUT.svg("text", { x: x0, y: y0 + cell + 30, "font-size": 12, style: "fill: var(--d-muted)" }, grid);
+    var labelY = y0 + rows * (cell + gap) + 18;
+    var label = TUT.svg("text", { x: x0, y: labelY, "font-size": 12, style: "fill: var(--d-muted)" }, grid);
     label.textContent = threads + " 线程 ÷ 64 = " + waves + " 个 wavefront";
+    // 固定两行高度，避免拖动滑块时下方内容上下跳动
+    grid.setAttribute("viewBox", "0 0 " + (x0 * 2 + cols * (cell + gap)) + " " + (y0 + 2 * (cell + gap) + 26));
   }
   slider.addEventListener("input", draw);
   draw();
