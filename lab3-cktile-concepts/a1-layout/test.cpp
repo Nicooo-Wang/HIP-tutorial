@@ -22,7 +22,7 @@ static void check2d(hk::Result& R, const char* what, std::function<int(int, int)
 }
 
 // 设备端写出 descriptor 的上层维度数和各维长度：out[0] = 维度数，out[1..] = get_length(0..)。
-// 偏移全对、长度写错的 descriptor 一旦拿去配 tile window / pad，越界屏蔽就会错，所以长度也是答案的一部分。
+// 偏移全对、长度写错的 descriptor 一旦拿去配 pad_tensor_view（它用 get_length 作为原长度判断越界），越界屏蔽就会错，所以长度也是答案的一部分。
 template <class MakeDesc, index_t NMax>
 __global__ void dump_len(int* out) {
   constexpr auto d = MakeDesc{}();

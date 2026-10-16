@@ -17,7 +17,7 @@ CK-Tile 里的 layout 不是一个公式，而是一个 **tensor descriptor**：
 注意：
 
 - 骨架里每个函数体都放了一个**能编译但不对**的占位（例如没做变换的 row-major、stride 全为 0 的 naive descriptor），所以原样提交时只有 `row_major` 通过，其余用例都 FAIL，这是预期的。写你的实现时把占位整行替换掉。
-- 上层维度的**个数、顺序与长度**都是答案的一部分：`flattened` 必须是 1 维、长度 M·N；`transposed_view` 的上层长度是 (N, M)；`tiled` 必须是 4 维，顺序为 (I, J, ii, jj)，长度为 (M/TM, N/TN, TM, TN)。偏移全对、长度写错的 descriptor 拿去配 tile window 或 pad 时，越界判断就会错。
+- 上层维度的**个数、顺序与长度**都是答案的一部分：`flattened` 必须是 1 维、长度 M·N；`transposed_view` 的上层长度是 (N, M)；`tiled` 必须是 4 维，顺序为 (I, J, ii, jj)，长度为 (M/TM, N/TN, TM, TN)。偏移全对、长度写错的 descriptor 拿去配 `pad_tensor_view` 时（它用 `get_length` 作为每一维的原长度来判断越界），越界判断就会错。
 
 ## 怎么判分
 

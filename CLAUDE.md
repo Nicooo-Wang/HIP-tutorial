@@ -33,7 +33,7 @@
 - `make_tile_window` 的原点用 `{static_cast<index_t>(blockIdx.x) * Tile}`，否则 unsigned→int 窄化报错。
 - `make_naive_tensor_view` 省略最后两个 guarantee 参数（向量长度、最后一维 stride）时 CK-Tile 不会推导，`ScalarPerVector` = 1，逐元素访问；1D float 例子汇编相同只是后端合并了标量 buffer 访存，不可依赖。
 - buffer 指令越界检查粒度是 4 字节（dword）：fp16/bf16/int8 等小类型在末尾部分越界的 dword 里，合法元素也会读成 0、写被丢弃（fp16 n=505 实测）。
-- naive 视图的越界屏蔽只靠硬件 range = `element_space_size × sizeof(T)` 字节（带行间距的视图是 (rows−1)·ld + cols 个元素，不是 rows·cols），软件 is_valid 标志恒为 true。2D tile 只有内层维（列）越界会“绕”进下一行、读写到别的行的数据；超出最后一行末尾的部分（包括最后一行的列越界和整行越界）超出 range，被硬件屏蔽。边缘要用 `pad_tensor_view`（33×31 转置不 pad 实测出错）。
+- naive 视图的越界屏蔽只靠硬件 range = `element_space_size × sizeof(T)` 字节（带行间距的视图是 (rows−1)·ld + cols 个元素，不是 rows·cols），软件 is_valid 标志恒为 true。2D tile 只有内层维（列）越界会“绕”出本行：带行间距（ld > cols）的视图里，小幅越界落在行间空位，越界超过 ld − cols 才读写到下一行的数据（ld = cols 时一越界就是下一行）；超出最后一行末尾的部分（包括最后一行的列越界和整行越界）超出 range，被硬件屏蔽。边缘要用 `pad_tensor_view`（33×31 转置不 pad 实测出错）。
 - `block_tile_reduce` 只支持 2D tile 归约第 1 维（`sequence<1>{}`）；写 `sequence<0>{}` 能编译、能运行，结果静默错误。`block_tile_reduce_sync` 只合并 lane 认领的 R 段，不跨 wavefront。
 - 视图承诺向量长度 V 时，pad 只检查向量第一个元素：`cols % V ≠ 0` 时行尾向量会读进下一行（gfx942 上非 16 字节对齐的 dwordx4 照样读对，可见后果是跨行，不是对齐）。
 
