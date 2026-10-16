@@ -30,10 +30,12 @@
 命令：
 
 ```bash
-make run A=a2 CASE=bandwidth
+make run A=a2 CASE=bandwidth   # 输出带宽，下一行是“本次实测拷贝带宽 … GB/s，比值 …”
 ```
 
-| kVec | 带宽（GB/s） | 同次实测拷贝带宽（GB/s） | 比值 |
+带宽有噪声：每种配置跑 3–5 次，表里填带宽最好的那一次（连同同一次的拷贝带宽与比值）。两种配置相差不到 10% 时，可能只是噪声。
+
+| kVec | 带宽（GB/s，最好一次） | 同次实测拷贝带宽（GB/s） | 比值 |
 |------|--------------|--------------------------|------|
 | 1    |              |                          |      |
 | 4    |              |                          |      |
@@ -45,7 +47,7 @@ make run A=a2 CASE=bandwidth
 
 ### 2. n = 1023 时最后一个 tile 不满，为什么代码里不需要写 `if (i < n)`？越界的 load 返回什么？越界的 store 又怎样？
 
-读 `/opt/rocm/include/ck_tile/core/tensor/buffer_view.hpp`，找 `address_space_enum::global` 对应的那个 `buffer_view` 的 `get` 和 `set`。
+从 `/opt/rocm/include/ck_tile/core/tensor/buffer_view.hpp` 里 `address_space_enum::global` 对应的那个 `buffer_view` 的 `get` 和 `set` 出发，一路追到 `core/arch/amd_buffer_addressing.hpp` 里真正发出 buffer 指令的函数（讲义 §3.1）。
 
 - 为什么不需要 `if (i < n)`：
 - 越界 load 返回（文件:行号）：
@@ -54,5 +56,13 @@ make run A=a2 CASE=bandwidth
 （在此作答）
 
 ### 3. 比较本作业与 Lab 1 a1 的代码：CK-Tile 把哪些“手写下标计算”变成了类型层面的描述？这种描述换成 2D tile 时的好处是什么？
+
+（在此作答）
+
+### 4. 把 H 写成 (2, 64, 4)、窗口长度改成 512，其余不变（block 仍是 4 个 wavefront、grid 仍按 1024 一个 block 计算），判分全部通过。为什么输出仍然完全正确？为什么它仍然是 bug？
+
+- warp 2、lane 0 的线程按这个 encoding 拿到的 H 坐标与元素下标：
+- 为什么结果碰巧全对：
+- 为什么仍然是 bug（换一种 grid 计算或换成 2D tile 会怎样）：
 
 （在此作答）

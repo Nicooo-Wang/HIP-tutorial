@@ -35,8 +35,14 @@ PERF_CASE(bandwidth, 2) {
   auto h = c.download();
   for (int i = 0; i < n; i += 9973) if (h[i] != 3.0f) { hk::fail(R, "结果错误 c[%d]=%g", i, h[i]); return; }
   if (h[n - 1] != 3.0f) { hk::fail(R, "结果错误 c[n-1]"); return; }
-  if (R.metric < kAddRatio * copy)
+  if (R.metric < kAddRatio * copy) {
     hk::fail(R, "带宽 %.0f GB/s，低于目标 %.0f GB/s（= %.0f%% × 本次实测拷贝带宽 %.0f GB/s）", R.metric,
              kAddRatio * copy, kAddRatio * 100, copy);
+  } else {
+    // 通过时也留下基准，供 make run 打印（书面问题 1 的表格要用）；make grade 只在失败时显示 msg
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "本次实测拷贝带宽 %.0f GB/s，比值 %.2f（目标 ≥ %.2f）", copy, R.metric / copy, kAddRatio);
+    R.msg = buf;
+  }
 }
 HK_MAIN()

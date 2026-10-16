@@ -16,7 +16,7 @@ constexpr index_t kTile = kBlock * kVec;    // 每个 block 处理 1024 个元�
 __global__ void ck_vector_add_kernel(const float* a, const float* b, float* c, index_t n) {
   // 1) tensor view：给裸指针加上形状 (n)、stride (1)。这是 a 的完整示例：
   //    越界访问由 buffer 指令按长度 n 屏蔽——所以后面不需要 if (i < n)。
-  //    最后两个参数是“向量长度 kVec”和“最后一维 stride 为 1”的编译期声明。
+  //    最后两个参数是“向量长度 kVec”和“最后一维 stride 为 1”的编译期承诺；不写的话 CK-Tile 一次只访问 1 个元素（讲义 §3.1）。
   auto va = make_naive_tensor_view<address_space_enum::global>(a, make_tuple(n), make_tuple(1), number<kVec>{}, number<1>{});
   (void)va;  // 写完后面的代码后，这一行可以删掉
 
