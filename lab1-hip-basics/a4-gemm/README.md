@@ -16,6 +16,8 @@ void launch_gemm_tiled(const float* A, const float* B, float* C, int M, int N, i
 
 tiled 部分你需要自己决定：tile 尺寸、block 形状、每个线程算几个输出、LDS 怎么摆放、K 方向怎么循环、边界怎么处理。可以复用 a2 学到的 padding 和 a3 学到的同步。
 
+骨架里只有空的 `launch_gemm_tiled`：**你需要自己新增 `__global__` kernel**（写在 `launch_gemm_tiled` 之前，个数和名字随你），再在 `launch_gemm_tiled` 里算好 grid/block 并启动它。
+
 注意：不要写 `C` 之外的内存，也不要修改输入；`C` 的初值不可信（测试会预先填成 NaN）；M、N、K 都可能不是 tile 的整数倍，K 也可能是 1。
 
 ## 怎么判分
@@ -28,12 +30,18 @@ make run A=a4 CASE=tiled_gflops          # 只运行一个用例，看原始输�
 | 用例 | 分值 | 检查什么 |
 |------|------|----------|
 | `naive_small` | 1 | naive，4×5×6 |
-| `naive_all_shapes` | 3 | naive，(M,N,K) = 1×1×1、17×33×65、64³、128×96×200、500×300×257、512³ |
+| `naive_all_shapes` | 3 | naive，(M,N,K) = 1×1×1、40×70×33、17×33×65、64³、128×96×200、500×300×257、512³ |
 | `tiled_aligned` | 2 | tiled，128³ |
 | `tiled_all_shapes` | 4 | tiled，同上全部形状（含非整除、K 不是 tile 的倍数） |
-| `tiled_gflops`（性能） | 4 | M=N=K=2048 的 fp32 GEMM 须达到 2000 GFLOPS（空闲 MI308X 实测：参考实现约 4600；naive 约 1150） |
+| `tiled_gflops`（性能） | 4 | M=N=K=2048 的 fp32 GEMM 须达到 2000 GFLOPS；计时后用行和、列和校验全部元素，并在每个 32×32 输出块里抽点逐元素检查 |
 
-正确性按逐元素误差界判定：`|C - ref| ≤ 1e-5 · Σ|a·b| + 1e-6`，与求和顺序无关，所以你可以随意安排 K 方向的累加顺序。
+正确性按逐元素误差界判定：`|C - ref| ≤ 1e-5 · Σ|a·b| + 1e-6`。它比随机输入下 fp32 的典型舍入误差宽松得多，对任何合理的求和顺序都成立，所以你可以随意安排 K 方向的累加顺序。
+
+性能参考（空闲 MI308X 实测）：naive 约 1150 GFLOPS；每线程 1 个输出的 16×16 分块约 3100；参考实现（一个简单设计，每线程算几个输出）约 4600；更好的设计可以高得多，例如认真做过寄存器分块的实现可达约 9500 GFLOPS——这也只有实测 fp32 吞吐（约 28 TFLOPS）的三分之一左右。a4 是绝对阈值（不像 a2、a3 那样跟拷贝带宽比），机器繁忙时先用 `rocm-smi` 确认再重跑。性能不够又找不到原因时，先查累加器有没有被放进 scratch（讲义 §5.4 末尾的 `-Rpass-analysis=kernel-resource-usage`）。
+
+读失败信息：“得到 nan”说明该元素没被写过（`C` 初始填 NaN），或者计算用到了越界读来的值——A、B 前后的哨兵区填的也是 NaN，越界读而没有补 0 时，NaN 会乘进结果里。
+
+> **判分覆盖不到的 bug。** ① 每一段末尾的第二个 `__syncthreads()`（读后写，讲义 §5.3）漏掉了，本机上反复测试几乎总是“碰巧”算对，但它是真实的数据竞争。② 累加器没有初始化为 0 是未定义行为，编译器可能恰好给出 0。这两类错误判分基本抓不到，只能靠你自己对照讲义 §5.3、§5.4 推理排除。
 
 ## Hints
 
@@ -53,7 +61,7 @@ make run A=a4 CASE=tiled_gflops          # 只运行一个用例，看原始输�
 
 </details>
 
-<details><summary>Hint 3（步骤提纲）</summary>
+<details><summary>Hint 3（卡住很久再看：步骤提纲）</summary>
 
 - 每一段（tile）的流程：协作加载 A、B 子块到 LDS → `__syncthreads()` → 用 LDS 数据做 TILE 次乘加 → `__syncthreads()`。
 - 补 0 之后乘加循环不需要边界判断；边界判断只放在加载和最终写 C 两处；`__syncthreads()` 不能放进 `if` 里。

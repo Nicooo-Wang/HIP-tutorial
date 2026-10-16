@@ -43,9 +43,15 @@ make run A=a3 CASE=shfl_bandwidth        # 只运行一个用例，看原始输�
 | `shfl_exact_ones` | 3 | shuffle 版本，同上 |
 | `shfl_random` | 2 | shuffle 版本，同上 |
 | `repeatable_output` | 1 | 连续调用两次，结果必须一致 |
-| `shfl_bandwidth`（性能） | 3 | n = 2^26 − 1 的读带宽须达到同进程实测拷贝带宽的 40%（参考实现约 67%；只用 1 个 block 的实现只有约 0.15%）；输入是随机的 0/1，结果须精确等于 1 的个数 |
+| `shfl_bandwidth`（性能） | 3 | n = 2^26 − 1 的读带宽须达到同进程实测拷贝带宽的 28%；输入是随机的 0/1，结果须精确等于 1 的个数 |
 
 全 1 输入在 n < 2^24 时，任何求和顺序的结果都精确等于 n，所以可以精确比较，漏掉或重复一个元素都会被抓住。
+
+性能参考（空闲 MI308X 实测，相对同进程拷贝带宽）：参考实现（简单设计，即骨架的两遍结构）约 67%；把 `kMaxBlocks` 降到 256 也有约 40%，同样能过；更好的设计可以达到甚至超过拷贝带宽本身（归约只读不写）；第 1 遍只用 1 个 block 的实现不到 0.2%。
+
+读失败信息：“得到 nan”说明 `out` 没被写过、或者某个部分和没被写过（`ws`、`out` 初始都填 NaN），也可能是读越界——`in` 前后的哨兵区填的也是 NaN。
+
+> **判分覆盖不到的 bug。** ① 树形归约里漏掉某一层的 `__syncthreads()` 是数据竞争：本机上精确用例（整组重复 3 遍）通常能抓到，但不保证每次都抓到。② `acc` 等累加变量忘了初始化是未定义行为，编译器可能恰好给出 0。“全部 PASS”不能证明没有这两类问题——对每一层问自己讲义 §4.2 的两个问题。
 
 ## Hints
 
@@ -53,17 +59,17 @@ make run A=a3 CASE=shfl_bandwidth        # 只运行一个用例，看原始输�
 
 - 为什么需要两遍 kernel？想想 block 之间能不能用 `__syncthreads()` 互相等待。
 - 每个线程先用 grid-stride loop 把自己负责的元素累加到一个寄存器里，再做 block 内归约；这样 block 数可以固定，与 n 无关。
-- 树形归约每一层活跃线程减半：第一层 `stride = kBlock/2`，线程 `t < stride` 把 `s[t + stride]` 加到 `s[t]`。
+- 树形归约每一层活跃线程减半。用讲义小部件 4.1 的“顺序寻址”模式数一数：第一层哪些线程活跃、各自加的是哪个槽位？之后每层怎么变？
 - shuffle 让同一 wavefront 的线程不经过 LDS，直接交换寄存器里的值。
 
 </details>
 
 <details><summary>Hint 2（关键步骤）</summary>
 
-- LDS 版：先 `s[tid] = v`，同步；然后每一层“读 → 加 → 同步”，同步不能放进 `if` 里面（所有线程必须都到达）。
-- `wave_reduce`：`offset` 从 `warpSize / 2` 开始每次减半，`v += __shfl_down(v, offset)`；循环结束后 lane 0 持有整个 wavefront 的和。
-- `block_reduce_shfl`：一个 block 有 `kBlock / warpSize` 个 wave；每个 wave 的 lane 0 把结果写进一个很小的 `__shared__` 数组，同步后让第 0 个 wave 读这些部分和（不存在的 lane 补 0），再做一次 `wave_reduce`。
-- 第 2 遍的输入只有 `blocks` 个元素，grid-stride loop 同样适用。
+- LDS 版：每个线程的值什么时候进 LDS？读别的线程写的槽位之前要保证什么？这个保证放在哪里才能让 block 里**每个**线程都执行到（包括这一层不活跃的线程）？
+- `wave_reduce`：在讲义图 4.2 的 8 lane 玩具上用 a…h 推演：第一次 `__shfl_down` 的偏移取多少，才能让 lane 0..3 各自拿到一个“还没被加过”的值？之后每次偏移怎么变、一共要几次？把 8 换成 `warpSize` 再写代码。
+- `block_reduce_shfl`：一个 block 有几个 wave？每个 wave 的部分和放在哪、谁来读？第 0 个 wave 里没有对应部分和的 lane 该拿什么值（讲义 §4.4）？
+- 第 2 遍的输入只有 `blocks` 个元素，你的 grid-stride loop 不用改也应该对——想想为什么。
 
 </details>
 
@@ -71,5 +77,10 @@ make run A=a3 CASE=shfl_bandwidth        # 只运行一个用例，看原始输�
 
 1. 把 `wave_reduce` 的 offset 从 16 开始（写死 32 线程的 wavefront）在 NVIDIA GPU 上是对的，在 MI308X 上为什么错？
 2. 为什么随机输入只能用容差比较，而全 1 输入可以精确比较？对 2^25 个 1 求和时，单线程顺序累加的结果是多少？为什么？
-3. 第 2 遍只用 1 个 block，会成为瓶颈吗？用 `rocprofv3 --kernel-trace` 看两个 kernel 各自耗时。
-4. （思考）能否只用一个 kernel 完成归约？（提示：atomic，或“最后一个完成的 block 负责汇总”——这是后面 mega kernel 中常见的跨 block 同步手法的雏形。）
+3. 第 2 遍只用 1 个 block，会成为瓶颈吗？用 rocprofv3 看两个 kernel 各自耗时：
+   ```bash
+   make run A=a3 CASE=shfl_bandwidth
+   rocprofv3 --kernel-trace --stats --output-format csv -d prof -o a3 -- ./build/run-a3 shfl_bandwidth
+   ```
+   在 `prof/a3_kernel_trace.csv` 里按 `Grid_Size_X`（线程总数）区分两遍（讲义 §6）。
+4. （思考，讲义没有直接讲，属于拓展）能否只用一个 kernel 完成归约？（提示：atomic，或“最后一个完成的 block 负责汇总”——这是后面 mega kernel 中常见的跨 block 同步手法的雏形。）

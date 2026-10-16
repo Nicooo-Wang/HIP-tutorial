@@ -82,7 +82,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
   <li><strong>寄存器（VGPR）</strong>：每个线程私有，最快。kernel 里的普通局部变量（例如累加器 <code>acc</code>）都在寄存器里。</li>
   <li><strong>LDS（Local Data Share）</strong>：每个 CU 一块 64 KiB 的片上存储，同一个 block 的线程共享，延迟远低于显存。代码里用 <code>__shared__</code> 声明（§3.4）。CUDA 资料里叫 shared memory。</li>
   <li><strong>L1 / L2 缓存</strong>：硬件自动管理。每个 CU 有 32 KiB L1，每个 XCD 有 4 MiB L2。缓存以 <strong>128 字节的 cache line</strong> 为单位搬运数据（rocminfo 的 <code>Cacheline Size: 128</code>）——这个数字是 §3.1 合并访存的基础。</li>
-  <li><strong>Infinity Cache</strong>：256 MiB，全卡共享，位于 HBM 之前。工作集小于它时，“显存”带宽会显得比 HBM 还高（§1.3 表中拷贝带宽随数据量变化就是这个原因）。</li>
+  <li><strong>Infinity Cache</strong>：256 MiB，全卡共享，位于 HBM 之前。工作集能放进它、又被反复读取时，这部分数据由它供给，有效带宽可以高于 HBM 本身。</li>
   <li><strong>HBM 显存（global memory）</strong>：约 192 GiB，<code>hipMalloc</code> 分配的都在这里。所有 CU 都能访问，容量最大，但最慢。</li>
 </ul>
 <figure class="diagram">
@@ -131,7 +131,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
 </figure>
 
 <h3 id="s1-3"><span class="sec">§1.3</span>本机参数表</h3>
-<p>下表前半部分是在本机直接查到的（与 <a href="../lab0-env/tutorial.html#s2-3">Lab 0 §2.3</a> 一致的不再重复来源细节）；后半部分是两个<strong>理论峰值</strong>，由查到的数据按公式算出，以及对应的<strong>本机实测</strong>值。理论峰值是“硬件不可能超过”的上限，实测值是“实际能摸到”的上限，两者都有用。</p>
+<p>下表前半部分是在本机直接查到的（与 <a href="../lab0-env/tutorial.html#s2-3">Lab 0 §2.3</a> 一致的不再重复来源细节；表中的 rocminfo 指 <code>/opt/rocm/bin/rocminfo</code>，它不在默认 PATH 里）；后半部分是两个<strong>理论峰值</strong>，由查到的数据按公式算出，以及对应的<strong>本机实测</strong>值。理论峰值是“硬件不可能超过”的上限，实测值是“实际能摸到”的上限，两者都有用。</p>
 <div class="table-wrap">
 <table class="facts">
   <caption>AMD Instinct MI308X（gfx942，CDNA3）· 本机查询 / 计算 / 实测</caption>
@@ -150,21 +150,22 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
     <tr><th>最高核心频率</th><td class="num">1850 MHz</td><td class="src">rocminfo “Max Clock Freq.”；hipDeviceAttributeClockRate</td></tr>
     <tr><th>HBM 峰值带宽（理论）</th><td class="num hl">≈ 5.3 TB/s</td><td class="src">8192 bit × 5.2 Gb/s 每引脚 ÷ 8 = 5325 GB/s，见下方公式</td></tr>
     <tr><th>fp32 向量峰值（理论）</th><td class="num hl">≈ 37.9 TFLOPS</td><td class="src">80 CU × 256 FLOP/周期/CU × 1.85 GHz，见下方公式</td></tr>
-    <tr><th>D2D 拷贝带宽（实测）</th><td class="num">≈ 2.17 TB/s</td><td class="src">hipMemcpy D2D 256 MiB，（读 + 写）字节 ÷ 时间；1 GiB 时 ≈ 1.9 TB/s</td></tr>
-    <tr><th>fp32 FMA 吞吐（实测）</th><td class="num">≈ 28 TFLOPS</td><td class="src">纯寄存器 FMA 微基准，运行中 sclk ≈ 1.39 GHz</td></tr>
+    <tr><th>D2D 拷贝带宽（实测）</th><td class="num">≈ 2.0–2.2 TB/s</td><td class="src">hipMemcpy D2D 256 MiB，（读 + 写）字节 ÷ 时间；1 GiB 时 ≈ 1.9 TB/s；不同时刻波动约 10%</td></tr>
+    <tr><th>只读带宽（实测）</th><td class="num">≈ 3–3.5 TB/s</td><td class="src">简单的 float4 grid-stride 只读 kernel，256 MiB–1 GiB</td></tr>
+    <tr><th>fp32 FMA 吞吐（实测）</th><td class="num">≈ 28 TFLOPS</td><td class="src">纯寄存器 FMA 微基准（<code>v_pk_fma_f32</code>），运行中 sclk ≈ 1.39 GHz</td></tr>
   </tbody>
 </table>
 </div>
-<p><strong>HBM 峰值带宽怎么来的。</strong>带宽 = 位宽 × 每根数据线每秒传输的比特数。本机 HBM3 总位宽 8192 bit（8 个 HBM 堆栈 × 1024 bit），存储时钟 1300 MHz。HBM3 的每引脚数据率是 5.2 Gb/s（正好是存储时钟 1.3 GHz 的 4 倍）：</p>
+<p><strong>HBM 峰值带宽怎么来的。</strong>带宽 = 位宽 × 每根数据线每秒传输的比特数。本机 HBM3 总位宽 8192 bit（8 个 HBM 堆栈 × 1024 bit），存储时钟 1300 MHz。按 AMD 的规格，MI300 系列 HBM3 的每引脚数据率是 5.2 Gb/s（这与 1.3 GHz 存储时钟的 4 倍相符，但这里是查规格，不是推导）：</p>
 <p class="formula">8192 bit × (1.3 GHz × 4) ÷ 8 bit/B = 5324.8 GB/s ≈ 5.3 TB/s</p>
 <p>这和 <code>amd-smi static</code> 直接报告的 <code>MAX_BANDWIDTH: 5325 GB/s</code> 一致，也与 AMD 官方给出的 MI300X（同为 8 个 HBM3 堆栈、5.2 Gb/s）的 5.3 TB/s 相同。</p>
 <p><strong>fp32 向量峰值怎么来的。</strong>峰值 = CU 数 × 每 CU 每周期浮点运算数 × 频率。AMD CDNA3 白皮书与 MI300X 数据表给出 MI300X 的 fp32 向量峰值 163.4 TFLOPS = 304 CU × 2.1 GHz × <strong>256 FLOP/周期/CU</strong>。每 CU 每周期 256 FLOP 的拆法是：4 个 SIMD × 每 SIMD 每周期 32 个 fp32 FMA × 每个 FMA 算 2 FLOP（一次乘 + 一次加）。代入本机：</p>
 <p class="formula">80 CU × 256 FLOP/周期/CU × 1.85 GHz = 37.9 TFLOPS</p>
 <div class="callout warn" data-title="理论峰值的两个前提">
-  <p>① <strong>要用 packed 指令。</strong>本机微基准显示：每 SIMD 每周期 32 个 FMA 只有在编译器生成 <code>v_pk_fma_f32</code>（一条指令同时做两个 fp32 FMA）时才能达到；普通的 <code>v_fma_f32</code> 只有一半速率（实测约 14 TFLOPS）。② <strong>要跑在最高频率。</strong>持续满负载时本机核心频率实测只有约 1.39 GHz（<code>rocm-smi --showclocks</code>），所以实测 FMA 吞吐约 28 TFLOPS ≈ 80 × 256 × 1.39 GHz。和理论峰值比较时，记住这两个折扣。</p>
+  <p>① <strong>指令和操作数要合适。</strong>每 SIMD 每周期 32 个 FMA 有两条路可达：编译器生成 <code>v_pk_fma_f32</code>（一条指令同时做两个 fp32 FMA）；或者普通的 <code>v_fma_f32</code> 由同一 SIMD 上的两个 wave 在同一周期<em>双发射</em>——这要求每个 SIMD 至少驻留 2 个 wave，并且指令的操作数不能来自标量寄存器（SGPR，例如直接拿 kernel 参数 <code>alpha</code> 当乘数）。本机微基准：操作数全在向量寄存器里的 <code>v_fma_f32</code> 约 26.5 TFLOPS，<code>v_pk_fma_f32</code> 约 28.3 TFLOPS；读 SGPR 操作数的 <code>v_fma_f32</code> 只有约 14 TFLOPS，每个 SIMD 只驻留 1 个 wave 时也只有约一半速率。GEMM 内层乘加的操作数来自 LDS 和寄存器，不打包也能接近全速。② <strong>跑不到最高频率。</strong>本机跑 kernel 时核心频率实测约 1.39–1.42 GHz（<code>rocm-smi --showclocks</code>；与负载大小基本无关，只占 8 个 CU 时也是约 1.42 GHz），所以实测 FMA 吞吐约 28 TFLOPS ≈ 80 × 256 × 1.39 GHz。和理论峰值比较时，记住这两个折扣。</p>
 </div>
 <div class="callout note" data-title="为什么性能用例以“拷贝带宽”为基准">
-  <p>理论 5.3 TB/s 在实践中摸不到：本机最简单的显存到显存拷贝（<code>hipMemcpy</code> D2D，由 ROCm 运行时自己的高度优化的 kernel 完成）也只有约 2.2 TB/s。因此 Lab 1 的访存类性能用例（a2、a3）都先在<em>同一进程</em>里测一次 D2D 拷贝带宽，再要求你的 kernel 达到它的某个比例。机器被别人占用时两者一起变慢，比例仍然公平。</p>
+  <p>理论 5.3 TB/s 在实践中摸不到：本机实测，显存到显存拷贝（<code>hipMemcpy</code> D2D，读 + 写，由 ROCm 运行时自己的 kernel 完成）约 2.0–2.2 TB/s，一个简单的只读 kernel 约 3–3.5 TB/s，都远低于理论值。Lab 1 的访存类性能用例（a2、a3）以拷贝带宽为“尺子”：先在<em>同一进程</em>里测一次 D2D 拷贝带宽，再要求你的 kernel 达到它的某个比例。机器被别人占用时两者一起变慢，比例仍然公平。注意这只是一种归一化，拷贝带宽<strong>不是上限</strong>：以读为主的 kernel（例如 a3 的归约）完全可以超过它。</p>
 </div>
 
 <h3 id="s1-4"><span class="sec">§1.4</span>两块天花板：带宽与算力</h3>
@@ -240,7 +241,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
 <h3 id="s2-2"><span class="sec">§2.2</span>kernel 与 launch</h3>
 <p>启动语法在 <a href="../lab0-env/tutorial.html#s3-1">Lab 0 §3.1</a> 讲过：<code>kernel&lt;&lt;&lt;grid, block, LDS 字节数, stream&gt;&gt;&gt;(参数…)</code>。补充四点本课要用的细节：</p>
 <ul>
-  <li><strong>参数按值传进 kernel。</strong>指针参数传的是地址值，<code>float alpha</code> 这样的标量直接拷进 kernel，每个线程都能读。指针必须指向显存（Assignment 里的指针都已经是 <code>hipMalloc</code> 来的）。</li>
+  <li><strong>参数按值传进 kernel。</strong>指针参数传的是地址值，<code>float alpha</code> 这样的标量直接拷进 kernel，每个线程都能读。指针必须指向 GPU 能访问的内存（通常就是显存；Assignment 里的指针都已经是 <code>hipMalloc</code> 来的）。</li>
   <li><strong>grid 和 block 可以是二维、三维。</strong>写成 <code>dim3 block(64, 4)</code>，kernel 里用 <code>threadIdx.y</code>、<code>blockIdx.y</code>、<code>blockDim.y</code>、<code>gridDim.y</code>。§3.2 的转置会用到。一维时直接写整数，等价于 <code>dim3(n, 1, 1)</code>。</li>
   <li><strong><code>gridDim</code></strong> 是 kernel 里能读到的“grid 有多少个 block”，与 <code>blockDim</code> 对称。§2.5 要用它。</li>
   <li><strong>启动是异步的</strong>（<a href="../lab0-env/tutorial.html#s4-2">Lab 0 §4.2</a>）。Assignment 的启动函数收到一个 <code>stream</code> 参数，原样传给启动语句即可；测试会负责同步和检查错误。</li>
@@ -249,7 +250,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
 <h3 id="s2-3"><span class="sec">§2.3</span>全局下标与边界检查</h3>
 <p>这一步 Lab 0 a1 已经做过，这里只复习要点。一维 grid 中每个线程的<strong>全局下标</strong>是“前面所有 block 的线程数 + 本 block 内的编号”：</p>
 <p class="formula">i = blockIdx.x × blockDim.x + threadIdx.x</p>
-<p>启动的线程总数通常比 n 多（最后一个 block 不满），所以访问 <code>a[i]</code>、<code>b[i]</code>、<code>c[i]</code> 之前必须判断 <code>i &lt; n</code>，否则多出来的线程会读写数组之外的内存。Lab 1 的测试用<strong>哨兵区</strong>检测越界写（原理见 <a href="../lab0-env/tutorial.html#s1-3">Lab 0 §1.3</a>），并在调用你的代码前把输出填成 NaN：失败信息里“得到 nan”说明那个元素<em>没有任何线程写过</em>。</p>
+<p>启动的线程总数通常比 n 多（最后一个 block 不满），所以访问 <code>a[i]</code>、<code>b[i]</code>、<code>c[i]</code> 之前必须判断 <code>i &lt; n</code>，否则多出来的线程会读写数组之外的内存。Lab 1 的测试用<strong>哨兵区</strong>检测越界写（原理见 <a href="../lab0-env/tutorial.html#s1-3">Lab 0 §1.3</a>），并在调用你的代码前把输出填成 NaN：失败信息里“得到 nan”通常说明那个元素<em>没有任何线程写过</em>。另一种可能是越界<em>读</em>：哨兵区里填的也是 NaN，越界读进来的值一旦参与运算，结果就变成 NaN。</p>
 <div class="callout note" data-title="add_large 为什么要求“逐位相等”">
   <p>fp32 的加法在 CPU 和 GPU 上都按 IEEE 754 舍入到最近，两个 float 相加的结果是唯一确定的，所以测试可以要求 GPU 结果与 CPU 的 <code>float</code> 加法逐位相同。只要你老老实实写一次 float 加法（不先转 double、不加别的运算），就一定相等。</p>
 </div>
@@ -264,12 +265,12 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
 <p>第 3 条展开说。§1.1 讲过，SIMD 靠在多个驻留的 wavefront 之间切换来掩盖访存延迟。每个 CU 最多驻留 32 个 wavefront（2048 个线程）；实际能驻留多少，取决于三种资源中最先用完的那个：</p>
 <ul>
   <li><strong>wave 槽位</strong>：32 个 / CU。block = 1024（16 个 wave）时，一个 CU 最多放 2 个 block。</li>
-  <li><strong>寄存器</strong>：每个线程用的寄存器越多，能同时驻留的 wave 越少。rocprofv3 的 trace 里 <code>VGPR_Count</code> 列就是每个线程用了多少个向量寄存器（<a href="../lab0-env/tutorial.html#s6-3">Lab 0 §6.3</a>）。</li>
+  <li><strong>寄存器</strong>：每个线程用的寄存器越多，能同时驻留的 wave 越少。rocprofv3 的 trace 里 <code>VGPR_Count</code> 列是每个线程分配到的向量寄存器数（<a href="../lab0-env/tutorial.html#s6-3">Lab 0 §6.3</a>；按分配粒度向上取整，比实际用到的略多）。编译时也能直接看到，见 §5.4。</li>
   <li><strong>LDS</strong>：一个 block 用 48 KiB LDS 时，64 KiB 的 CU 里只放得下 1 个这样的 block（§3.4 再谈）。</li>
 </ul>
 <p><strong>驻留的 wave 数 ÷ 32</strong> 就是占用率。占用率不是越高越好（寄存器多一些往往能让每个线程干更多活），但对向量加法这种纯访存 kernel，足够的驻留 wave 数直接决定了能不能把显存带宽吃满。实践中 <strong>256</strong> 是个稳妥的默认值：4 个 wavefront，既不会小到让每个 CU 的 block 数受限，也不会大到在 n 较小时只填满少数几个 CU。</p>
 <div class="callout pitfall">
-  <p>别忘了“grid 太小”这另一面：n = 1 时 grid = 1 个 block，但 n = 2<sup>24</sup> + 1 时 grid 有 65537 个 block（B = 256）。两者都要算对——测试同时覆盖 n = 1、7、1023、1024、100003、2<sup>24</sup> + 1。</p>
+  <p>别忘了“grid 太小”这另一面：n = 1 时 grid = 1 个 block，但 n = 2<sup>24</sup> + 3 时 grid 有 65537 个 block（B = 256）。两者都要算对——测试同时覆盖 n = 1、7、1023、1024、100003、2<sup>24</sup> + 3。</p>
 </div>
 
 <h3 id="s2-5"><span class="sec">§2.5</span>grid-stride loop</h3>
@@ -293,6 +294,7 @@ void launch_fill(float* p, float v, int n, hipStream_t stream) {
   <li><strong>循环条件 <code>i &lt; n</code> 本身就是边界检查。</strong>n 小于线程总数时，很多线程一次都不进循环；n 很大时，每个线程转 ⌈n/T⌉ 或 ⌊n/T⌋ 圈。</li>
   <li><strong>每一圈里，同一个 wavefront 的 64 个 lane 仍然访问 64 个相邻元素</strong>——这一点对显存效率至关重要（§3.1）。如果反过来让每个线程处理“自己连续的一段”（线程 0 处理 0–99，线程 1 处理 100–199……），同一时刻 64 个 lane 的地址就相隔 100 个元素，访存效率会大跌。在下面的小部件里切换两种映射，对比每一步被访问的元素分布。</li>
   <li><strong>grid 大小与正确性解耦了。</strong>grid 设成 1 也能算对（只是慢）；设成多少只影响性能。</li>
+  <li>（细节）下标用 <code>int</code> 时，n 接近 2<sup>31</sup> 的情况下 <code>i += stride</code> 可能溢出，而有符号整数溢出是未定义行为。本课的规模远小于此，用 <code>int</code> 没问题；以后处理更大的数组要换成 <code>size_t</code> 或 <code>int64_t</code>。</li>
 </ul>
 <figure class="widget" data-widget="grid-stride">
   <div class="widget-head"><b>grid-stride loop：谁在第几步处理哪个元素</b><span class="hint">调参数，点“播放”或拖动“步”</span></div>
@@ -331,8 +333,8 @@ void launch_fill(float* p, float v, int n, hipStream_t stream) {
 <h3 id="s3-1"><span class="sec">§3.1</span>合并访存</h3>
 <p>显存不是按“一个 float”读写的。一个 wavefront 执行一条 load 指令时，64 个 lane 各给出一个地址；硬件把这些地址按 <strong>128 字节的 cache line</strong> 归并，每条涉及的 cache line 都要整条搬运一次。所以真正决定开销的，是<strong>这 64 个地址落在多少条 cache line 里</strong>：</p>
 <ul>
-  <li>64 个 lane 访问 64 个<strong>连续</strong>的 float：共 256 字节，正好 2 条 cache line，搬来的每个字节都有用。这叫<strong>合并访存（coalesced access）</strong>。</li>
-  <li>64 个 lane 访问间隔很大的地址（比如每个 lane 相隔一整行矩阵）：落在 64 条不同的 cache line 里，搬了 64 × 128 = 8192 字节，只用到其中 256 字节，有效率 1/32。</li>
+  <li>64 个 lane 访问 64 个<strong>连续</strong>的 float：共 256 字节，（起始地址按 128 字节对齐时）正好 2 条 cache line，搬来的每个字节都有用。这叫<strong>合并访存（coalesced access）</strong>。</li>
+  <li>64 个 lane 访问间隔很大的地址（比如每个 lane 相隔一整行矩阵）：落在 64 条不同的 cache line 里，要做 64 次 cache line 级的访问（按整条算是 64 × 128 = 8192 字节），只用到其中 256 字节，有效率约 1/32。更下层（Infinity Cache、HBM）的实际搬运粒度可能小于一整条 line，但这 64 次访问的代价是实打实的。</li>
 </ul>
 <figure class="diagram">
   <svg viewBox="0 0 640 250" role="img" aria-labelledby="fig31-t">
@@ -363,7 +365,7 @@ void launch_fill(float* p, float v, int n, hipStream_t stream) {
     <text x="388" y="219" font-size="13" text-anchor="middle">……</text>
     <text x="20" y="244" font-size="12">→ 64 条 cache line，搬 8192 B，每条只用 4 B（红色细条），有效率 1/32</text>
   </svg>
-  <figcaption><b>图 3.1</b>合并访存的判断标准：同一个 wavefront 在同一条指令里给出的 64 个地址，覆盖了几条 cache line。写操作同理——即使只改 4 字节，硬件也要处理整条 cache line。</figcaption>
+  <figcaption><b>图 3.1</b>合并访存的判断标准：同一个 wavefront 在同一条指令里给出的 64 个地址，覆盖了几条 cache line。写操作同理——即使只改 4 字节，也要占用一次 cache line 级的访问。</figcaption>
 </figure>
 <p>记住这个口诀：<strong>让 <code>threadIdx.x</code> 相邻的线程访问相邻的地址。</strong>行主序矩阵中“相邻的地址”是同一行的相邻列，所以通常让 x 方向的线程对应列号。</p>
 
@@ -449,7 +451,7 @@ dim3 grid((cols + block.x - 1) / block.x,    // x 方向覆盖所有列
   <li><strong>声明</strong>：在 kernel（或 <code>__device__</code> 函数）里写 <code>__shared__ float tile[R][C];</code>。尺寸必须是<strong>编译期常量</strong>（字面量或 <code>constexpr</code>）。</li>
   <li><strong>作用域与可见性</strong>：每个 block 有自己独立的一份；同一个 block 的所有线程看到的是同一份，不同 block 之间互不可见。</li>
   <li><strong>生命周期</strong>：block 开始时分配，block 结束时消失。<strong>不会被初始化</strong>——内容不确定（可能是之前别的 block 留下的值），要自己写入后再读。</li>
-  <li><strong>容量</strong>：每个 block 最多 64 KiB（§1.3）。超过时编译直接报错，例如 <code>__shared__ float s[16385];</code>（65540 字节）在本机得到 <code>error: local memory (65540) exceeds limit (65536)</code>。本机每个 CU 也只有 64 KiB，所以一个 block 用的 LDS 越多，一个 CU 上能同时驻留的 block 越少（§2.4）。</li>
+  <li><strong>容量</strong>：每个 block 最多 64 KiB（§1.3）。像这样静态声明（尺寸写在代码里）时，超过就会编译报错，例如 <code>__shared__ float s[16385];</code>（65540 字节）在本机得到 <code>error: local memory (65540) exceeds limit (65536)</code>。本机每个 CU 也只有 64 KiB，所以一个 block 用的 LDS 越多，一个 CU 上能同时驻留的 block 越少（§2.4）。</li>
 </ul>
 <p>下面是 LDS 的一个最小例子（不是转置）：每个 block 把自己负责的 256 个元素倒序写回。线程 t 在第 ③ 步读的是线程 255 − t 在第 ① 步写的槽位——LDS 让线程能读到<em>别的线程</em>的数据：</p>
 <pre><code class="language-cpp">constexpr int kB = 256;
@@ -507,7 +509,7 @@ __global__ void reverse_each_block(const float* in, float* out) {
 <h3 id="s3-6"><span class="sec">§3.6</span>bank conflict 与 padding</h3>
 <p>LDS 内部被分成 <strong>32 个 bank</strong>，每个 bank 4 字节宽；地址按 4 字节一格轮流分给各 bank：</p>
 <p class="formula">bank = (字节地址 ÷ 4) mod 32 <span class="c">　// 对 float 数组 s[k]，就是 k mod 32</span></p>
-<p>每个 bank 每个周期只能服务<strong>一个</strong>地址。可以这样理解一个 wavefront 读 LDS（例如 <code>ds_read_b32</code>）的过程：64 个 lane 分成两半，每半 32 个 lane 对应 32 个 bank 同时访问。如果同一半里有 k 个 lane 访问了<strong>同一个 bank 的不同地址</strong>，这些访问只能串行，要花 k 倍时间——这叫 <strong>k 路 bank conflict</strong>。多个 lane 读<strong>同一个地址</strong>不算冲突（广播）。</p>
+<p>每个 bank 每个周期只能服务<strong>一个</strong>地址。一个 wavefront 读 LDS（每个 lane 读 4 字节，即 <code>ds_read_b32</code>）的过程是：64 个 lane 分成两半，每半 32 个 lane 对应 32 个 bank 同时访问。如果同一半里有 k 个 lane 访问了<strong>同一个 bank 的不同地址</strong>，这些访问只能串行，要花 k 倍时间——这叫 <strong>k 路 bank conflict</strong>。多个 lane 读<strong>同一个地址</strong>不算冲突（广播）。</p>
 <p>转置的第 ③ 步“按列取”正好撞上最坏情况。设 <code>__shared__ float tile[64][64]</code>，一个 wavefront 的 lane x 读 <code>tile[x][y]</code>（固定的 y），地址是 <code>x × 64 + y</code>：</p>
 <p class="formula">bank = (x × 64 + y) mod 32 = y mod 32 <span class="c">　// 与 x 无关！</span></p>
 <p>所有 lane 落进同一个 bank：32 路冲突，这一步慢 32 倍。修复方法简单得惊人：每行多开一列，<code>tile[64][64 + 1]</code>。这时地址是 <code>x × 65 + y</code>，bank = (x + y) mod 32，相邻 lane 落在相邻 bank，冲突消失。多出的那一列从不存数据，只用来“错开”每一行的起始 bank，这叫 <strong>padding</strong>。代价是 64 × 4 = 256 字节的 LDS。</p>
@@ -536,12 +538,13 @@ __global__ void reverse_each_block(const float* in, float* out) {
 </table>
 </div>
 <p>耗时与“32 个 bank、每半个 wavefront 一批”的模型吻合（倍数略低于预测，是因为循环里还有别的开销）。特别注意 stride 64 与 32 同样慢、而不是更慢——说明 bank 数是 32 而不是 64。CUDA 资料里“32 个 bank”的结论在这里恰好也成立，但背后的 wavefront 是 64 宽，别把两件事混在一起。</p>
+<p>“两半各一批”也有微基准直接验证：让前 32 个 lane 都读 bank 0、后 32 个 lane 都读 bank 1，耗时与 64 个 lane 全读 bank 0 一样（约 12 倍）。如果 64 个 lane 是一起处理的，前一种情况应该只慢约 6 倍。这条规则针对每 lane 4 字节的读；用 <code>float2</code>/<code>float4</code> 一次读 8/16 字节（<code>ds_read_b64</code>/<code>ds_read_b128</code>）时 lane 的分组方式不同，以后用到时再查（ROCm Blog《Avoiding LDS Bank Conflicts on AMD GPUs Using CK-Tile》）。</p>
 
 <h3 id="s3-7"><span class="sec">§3.7</span>用带宽衡量 kernel、读懂 <code>lds_bandwidth</code> 用例</h3>
 <p>访存密集的 kernel 用<strong>有效带宽</strong>衡量：kernel 逻辑上必须读写的字节数 ÷ 耗时。转置读 rows × cols 个 float、写同样多：</p>
 <p class="formula">有效带宽 = 2 × rows × cols × 4 字节 ÷ 耗时</p>
 <p>“逻辑上必须”是关键：缓存未命中多搬的、cache line 里浪费的字节都不算。所以 naive 转置虽然让显存忙得要死，有效带宽却很低——它的大部分搬运都是浪费。</p>
-<p><code>lds_bandwidth</code> 用例在 8192 × 8192 上测你的 <code>launch_transpose_lds</code>：先取多次运行中最快的一次算有效带宽，并逐元素校验整个输出确认结果正确（防止“什么都不做所以很快”），最后与<em>同一进程</em>里测得的 D2D 拷贝带宽（同样是读 + 写，见 §1.3）比较，达到 <strong>14%</strong> 才通过。参考：空闲 MI308X 上，naive 约 6%，一个带 padding 的 64 × 64 LDS 分块实现约 34%。所以只要 tile、合并、同步、padding 都对了，阈值留有充足余量；如果你的 LDS 版本没过，最可能的原因是读或写仍然有一边不合并。</p>
+<p><code>lds_bandwidth</code> 用例在 8192 × 8192 上测你的 <code>launch_transpose_lds</code>：先取多次运行中最快的一次算有效带宽，并逐元素校验整个输出确认结果正确（防止“什么都不做所以很快”），最后与<em>同一进程</em>里测得的 D2D 拷贝带宽（同样是读 + 写，见 §1.3）比较，达到 <strong>14%</strong> 才通过。参考：空闲 MI308X 上实测，naive 约 6%；参考实现（一个简单的 64 × 64 带 padding 的 LDS 分块）约 31–35%；更好的设计可以更高（本机测到过约 55–60% 的实现）。所以只要 tile、合并、同步都对了，阈值留有充足余量；如果你的 LDS 版本没过，最可能的原因是读或写仍然有一边不合并。</p>
 <p>如果 <code>launch_transpose_lds</code> 还在调用 naive 版本，你会看到类似这样的输出（数字是示意）：</p>
 <pre><code class="language-text">  lds_bandwidth............................... FAIL (0/3)  [139.0 GB/s]
     带宽 139 GB/s，低于目标 304 GB/s（= 14% × 本次实测拷贝带宽 2170 GB/s）</code></pre>
@@ -557,7 +560,7 @@ __global__ void reverse_each_block(const float* in, float* out) {
 <p>归约（reduction）把 n 个数合成一个：求和、求最大值、求范数。它是 softmax、layernorm、注意力里必不可少的一步，也是第一个需要线程<em>合作</em>出结果的问题：每个线程只知道自己那部分，答案却要汇总全体。</p>
 
 <h3 id="s4-1"><span class="sec">§4.1</span>两遍归约结构</h3>
-<p>block 内的线程可以通过 LDS + <code>__syncthreads()</code> 合作，但<strong>不同 block 之间没有屏障</strong>：它们可能在不同 CU 上、以任意顺序执行，甚至不会同时存在（block 数多于 GPU 能同时容纳的数量时，后面的 block 要等前面的退出才开始）。所以“全体 block 都算完部分和之后再汇总”这件事，在一个 kernel 里做不到——最直接的办法是用<strong>kernel 边界</strong>当全局屏障：同一个 stream 里，第二个 kernel 一定在第一个全部结束之后才开始。</p>
+<p>block 内的线程可以通过 LDS + <code>__syncthreads()</code> 合作，但<strong>不同 block 之间没有屏障</strong>：它们可能在不同 CU 上、以任意顺序执行，甚至不会同时存在（block 数多于 GPU 能同时容纳的数量时，后面的 block 要等前面的退出才开始）。所以在普通的 kernel 里，没有现成的屏障能保证“全体 block 都算完部分和之后再汇总”。最直接、最可靠的办法是用<strong>kernel 边界</strong>当全局屏障：同一个 stream 里，第二个 kernel 一定在第一个全部结束之后才开始。（一个 kernel 里也有办法做到，但需要本课还没讲的工具——a3 书面问题 4 请你想一想。）</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 260" role="img" aria-labelledby="fig41-t">
     <title id="fig41-t">两遍归约：第一遍多个 block 各自用 grid-stride loop 累加并做 block 内归约，写到工作区；第二遍一个 block 汇总工作区</title>
@@ -600,7 +603,7 @@ __global__ void reverse_each_block(const float* in, float* out) {
 </ul>
 <p>剩下的问题就是“block 内的 256 个数怎么合成一个”，即 <code>block_reduce_*</code>。下面讲两种做法。</p>
 <div class="callout note" data-title="shfl_bandwidth 用例：为什么 block 数很重要">
-  <p>归约每个元素只读一次、几乎不写，用<strong>读带宽</strong>（n × 4 字节 ÷ 时间）衡量，阈值是同进程拷贝带宽的 40%（参考实现约 67%）。如果第 1 遍只用 1 个 block，就只有 1 个 CU 在干活，另外 79 个闲着，读带宽只有拷贝带宽的约 0.15%。骨架的 block 数已经设好了，你只要保证 grid-stride 访问是合并的（§2.5 的提醒），block 内归约别太慢。</p>
+  <p>归约每个元素只读一次、几乎不写，用<strong>读带宽</strong>（n × 4 字节 ÷ 时间）衡量，阈值是同进程拷贝带宽的 28%。空闲 MI308X 上实测：参考实现（简单设计，最多 1024 个 block）约 67%；把 block 上限降到 256 也有约 40%，同样能过；更好的设计可以达到甚至超过拷贝带宽本身（归约只读不写）。如果第 1 遍只用 1 个 block，就只有 1 个 CU 在干活，另外 79 个闲着，读带宽不到拷贝带宽的 0.2%。骨架的 block 数已经设好了，你只要保证 grid-stride 访问是合并的（§2.5 的提醒），block 内归约别太慢。</p>
 </div>
 
 <h3 id="s4-2"><span class="sec">§4.2</span>LDS 树形归约</h3>
@@ -633,10 +636,10 @@ __global__ void reverse_each_block(const float* in, float* out) {
 <p>最后，函数返回时只要求 thread 0 拿到正确结果（骨架注释中的约定），因为只有 thread 0 会写 <code>dst[blockIdx.x]</code>。</p>
 
 <h3 id="s4-3"><span class="sec">§4.3</span><code>__shfl_down</code> 与 wave64</h3>
-<p>树形归约的后几层很浪费：stride ≤ 32 时只剩一个 wavefront 在干活，却仍然每层都要走一遍 LDS 和屏障。同一个 wavefront 的 lane 之间有更快的通道：<strong>shuffle</strong>，让 lane 直接读取<em>另一个 lane 的寄存器</em>，不需要 LDS 数组，也不需要 <code>__syncthreads()</code>（一个 wavefront 的 64 个 lane 本来就在同步执行同一条指令）。</p>
+<p>树形归约的后几层很浪费：stride ≤ 64 时（顺序寻址下只有 t &lt; 64 的线程活跃）只剩一个 wavefront 在干活，却仍然每层都要走一遍 LDS 和屏障。同一个 wavefront 的 lane 之间有更快的通道：<strong>shuffle</strong>，让 lane 直接读取<em>另一个 lane 的寄存器</em>，不需要 LDS 数组，也不需要 <code>__syncthreads()</code>（一个 wavefront 的 64 个 lane 本来就在同步执行同一条指令）。</p>
 <pre><code class="language-cpp">// HIP 原型（hip/amd_detail/amd_warp_functions.h）
 float __shfl_down(float var, unsigned int lane_delta, int width = warpSize);</code></pre>
-<p>语义：每个 lane 得到“编号比自己大 <code>lane_delta</code> 的那个 lane”的 <code>var</code>。若源 lane 超出范围（≥ width），就得到<strong>自己的</strong> <code>var</code>（本机实测：<code>__shfl_down(v, 1)</code> 在 lane 63 返回 lane 63 自己的值）。所有 lane 必须一起调用。</p>
+<p>语义：每个 lane 得到“编号比自己大 <code>lane_delta</code> 的那个 lane”的 <code>var</code>。若源 lane 超出范围（默认 width = warpSize，即编号 ≥ 64；width 更小时按每 width 个 lane 一段、在段内判断），就得到<strong>自己的</strong> <code>var</code>（本机实测：<code>__shfl_down(v, 1)</code> 在 lane 63 返回 lane 63 自己的值）。所有 lane 必须一起调用。</p>
 <p>用 8 个 lane 的“玩具 wavefront”（width = 8）看两次单独的调用，每一格是该 lane 调用后得到的值：</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 200" role="img" aria-labelledby="fig43-t">
@@ -669,10 +672,11 @@ float __shfl_down(float var, unsigned int lane_delta, int width = warpSize);</co
   <li>HIP 的内置变量 <code>warpSize</code> 在设备代码里给出 wavefront 宽度（本机为 64）；它是<em>运行时</em>值（见下方“注意”），可以用在循环、除法、取模里。</li>
 </ul>
 <div class="callout pitfall" data-title="CUDA 资料里的 32，在这里是 64">
-  <p>网上绝大多数 shuffle 归约代码来自 NVIDIA：warp 是 <strong>32</strong> 个线程，所以那些代码里到处是按 32 推出来的常数（循环几次、从多大的偏移开始），还常用 <code>__shfl_down_sync(0xffffffff, …)</code> 这种带 32 位掩码的版本。AMD 的 wavefront 是 <strong>64</strong> 个 lane：照抄这些常数，代码能编译、能运行，结果却是错的——有一部分 lane 的值根本没被汇总进来（a3 书面问题 1 请你说清楚是哪一部分）。原则：<strong>不要写死任何与 wavefront 宽度有关的数字</strong>，一律从 <code>warpSize</code> 推出来。</p>
+  <p>网上绝大多数 shuffle 归约代码来自 NVIDIA：warp 是 <strong>32</strong> 个线程，所以那些代码里到处是按 32 推出来的常数（循环几次、从多大的偏移开始）。AMD 的 wavefront 是 <strong>64</strong> 个 lane：照抄这些常数，代码能编译、能运行，结果却是错的——有一部分 lane 的值根本没被汇总进来（a3 书面问题 1 请你说清楚是哪一部分）。原则：<strong>不要写死任何与 wavefront 宽度有关的数字</strong>，一律从 <code>warpSize</code> 推出来。</p>
+  <p>CUDA 代码里还常见带掩码的 <code>__shfl_down_sync(0xffffffff, …)</code>。照抄到 ROCm 7.2 上会<strong>直接编译失败</strong>：HIP 的 <code>_sync</code> 系列要求 64 位掩码，32 位的 <code>0xffffffff</code> 会触发 <code>static assertion failed … The mask must be a 64-bit integer</code>。本课用不带掩码的 <code>__shfl_down</code> 即可。</p>
 </div>
 <div class="callout warn" data-title="warpSize 不是编译期常量">
-  <p>在 ROCm 7 中，<code>warpSize</code> 只能在设备代码里<em>运行时</em>使用（循环边界、除法、取模都可以），不能用在需要编译期常量的地方。本机实测，<code>constexpr int W = warpSize;</code> 和 <code>__shared__ float s[256 / warpSize];</code> 都会编译失败（前者报 “must be initialized by a constant expression”，后者报 LDS 数组不能是变长数组）。需要按 wave 数开 LDS 数组时，用一个编译期就确定、且足够大的尺寸——例如按“可能的最小 wavefront 宽度”算出的上界——再在运行时用 <code>warpSize</code> 决定实际用几个槽位。</p>
+  <p>在 ROCm 7 中，<code>warpSize</code> 只能在设备代码里<em>运行时</em>使用（循环边界、除法、取模都可以），不能用在需要编译期常量的地方。本机实测，<code>constexpr int W = warpSize;</code> 和 <code>__shared__ float s[256 / warpSize];</code> 都会编译失败（前者报 “must be initialized by a constant expression”，后者报 LDS 数组不能是变长数组）。需要按 wave 数开 LDS 数组时，用一个编译期就确定、且足够大的尺寸——例如按“可能的最小 wavefront 宽度”算出的上界（HIP 支持的 wavefront 宽度只有 32 和 64 两种）——再在运行时用 <code>warpSize</code> 决定实际用几个槽位。</p>
 </div>
 <div class="callout note">
   <p>在 AMD GPU 上，<code>__shfl_down</code> 由 <code>ds_bpermute_b32</code> 指令实现：它借用 LDS 的交叉开关在 lane 之间搬数据，但<strong>不占用</strong>你的 LDS 空间，也不需要屏障。比它更快的跨 lane 指令（DPP）会在后面的 Lab 中遇到。</p>
@@ -824,7 +828,7 @@ __global__ void sum_dist(const float* x, int n, const float* p, int m, float* y)
 <ul>
   <li><strong>协作加载</strong>：每个线程只搬 tile 中的一个元素，却要读整段 tile——这就是复用。相邻线程读相邻的全局地址，合并（§3.1）。GEMM 里每一段要搬<em>两个</em>二维小块，线程数与小块元素数也未必相等，搬运的分工（哪个线程搬哪个元素、是否要循环搬多个，参考 §3.4）需要你自己设计，同样要保证合并。</li>
   <li><strong>屏障 ①（写后读）</strong>与转置中的同步作用相同：读 tile 之前，别的线程负责的那部分必须已经写进去了。</li>
-  <li><strong>屏障 ②（读后写）</strong>是新出现的：下一轮一开始就要往 tile 里写<em>下一段</em>的数据。如果某个快的 wave 已经进入下一轮开始覆盖，而慢的 wave 还在读这一段，慢 wave 就会读到被覆盖的值。所以“覆盖之前要等所有人用完”——这叫<strong>读后写（write-after-read）</strong>依赖，和屏障 ① 解决的“写后读”正好相反。把屏障 ② 删掉，结果会随调度时好时坏。</li>
+  <li><strong>屏障 ②（读后写）</strong>是新出现的：下一轮一开始就要往 tile 里写<em>下一段</em>的数据。如果某个快的 wave 已经进入下一轮开始覆盖，而慢的 wave 还在读这一段，慢 wave 就会读到被覆盖的值。所以“覆盖之前要等所有人用完”——这叫<strong>读后写（write-after-read）</strong>依赖，和屏障 ① 解决的“写后读”正好相反。把屏障 ② 删掉，结果会随调度时好时坏——而且在本机上“坏”的概率小到测试几乎抓不到（见 §5.4 末尾），只能靠你自己保证它在。</li>
   <li>两个屏障都在循环体的“顶层”，不在任何只有部分线程进入的 <code>if</code> 里（§3.5）——所以越界线程不能提前 <code>return</code>。</li>
   <li>这个例子用 <code>cnt</code> 处理最后一段不满的情况；GEMM 里有更省事的办法（§5.4 的补零），二者都可以。</li>
 </ul>
@@ -861,6 +865,36 @@ __global__ void sum_dist(const float* x, int n, const float* p, int m, float* y)
   <li><strong>输出怎么分给线程</strong>：一个线程的 TN 个输出若是连续的几列，相邻线程写 C 时会相隔 TN 个元素；若是间隔“线程列数”的几列（类似 grid-stride），相邻线程写的就是相邻地址。两种都能对，合并程度不同。</li>
   <li><strong>资源</strong>：累加器占寄存器，As + Bs 占 LDS。例如 BM = BN = 64、BK = 16：(64 × 16 + 16 × 64) × 4 字节 = 8 KiB LDS。占用太多会降低 occupancy（§2.4）。</li>
 </ul>
+<h4>让累加器真的留在寄存器里</h4>
+<p>TM × TN 个累加器在 C++ 里自然写成一个小数组 <code>float acc[TM][TN]</code>。但 GPU 的寄存器不能按“运行时才知道的下标”寻址：只有编译器在编译期就能确定每一次访问的是 <code>acc</code> 的哪个元素，它才能把每个元素放进一个固定的寄存器。做不到时，编译器只好把整个数组放进 <strong>scratch</strong>（每个线程私有的一块显存，经缓存访问），每次乘加都变成一次访存——结果仍然正确，只是慢很多，判分只会告诉你“性能 FAIL”。要让编译器确定下标，需要两件事：</p>
+<ul>
+  <li>TM、TN 和访问 <code>acc</code> 的循环边界都是<strong>编译期常量</strong>（例如 <code>constexpr int TM = 4;</code>），不要用 kernel 参数或其他运行时变量当边界；</li>
+  <li>访问 <code>acc</code> 的循环被<strong>完全展开</strong>，展开后每个 <code>acc[i][j]</code> 的 i、j 都是字面常数。边界是常量的小循环在 <code>-O2</code> 下通常会被自动展开；在循环前写 <code>#pragma unroll</code> 可以明确要求展开。</li>
+</ul>
+<pre><code class="language-cpp">constexpr int TM = 4, TN = 4;
+float acc[TM][TN] = {};          // 别忘了初始化为 0
+// ……在内层循环里：
+#pragma unroll
+for (int i = 0; i &lt; TM; ++i)     // 常量边界 + 展开 → acc 留在寄存器
+#pragma unroll
+  for (int j = 0; j &lt; TN; ++j)
+    acc[i][j] += a[i] * b[j];
+// 反例：for (int i = 0; i &lt; tm; ++i) …   ← tm 是运行时的值，展不开，acc 会被放进 scratch</code></pre>
+<p>怎么确认？编译时加上 <code>-Rpass-analysis=kernel-resource-usage</code>，hipcc 会为每个 kernel 打印寄存器、scratch 和 LDS 用量（在 <code>lab1-hip-basics/</code> 下运行）：</p>
+<pre><code class="language-bash">/opt/rocm/bin/hipcc -std=c++20 -O2 --offload-arch=gfx942 -c a4-gemm/gemm.hip -o /tmp/gemm.o \
+    -Rpass-analysis=kernel-resource-usage</code></pre>
+<p>下面是本机对两个小实验 kernel 的实际输出（节选，省略了每行开头的文件名和行号）：两者都用上面那样的 4 × 4 累加器，<code>acc_const</code> 的循环边界是常量，<code>acc_runtime</code> 的边界是 kernel 参数：</p>
+<pre><code class="language-text">remark: Function Name: _Z9acc_constPKfS0_Pfi
+remark:     VGPRs: 22
+remark:     ScratchSize [bytes/lane]: 0
+remark:     Occupancy [waves/SIMD]: 8
+remark:     VGPRs Spill: 0
+remark: Function Name: _Z11acc_runtimePKfS0_Pfiii
+remark:     VGPRs: 10
+remark:     ScratchSize [bytes/lane]: 80
+remark:     Occupancy [waves/SIMD]: 8
+remark:     VGPRs Spill: 0</code></pre>
+<p>重点看两行：<code>ScratchSize</code> 不为 0，说明有数据被放进了 scratch（<code>acc_runtime</code> 的 16 个累加器就在那里，VGPR 反而用得更少）；<code>VGPRs Spill</code> 不为 0，说明寄存器不够用、编译器被迫把一部分值“溢出”到 scratch（累加器开得太多时会出现）。对分块 GEMM，这两项都应该是 0。<code>Occupancy [waves/SIMD]</code> 是每个 SIMD 最多能驻留的 wave 数（§2.4），<code>LDS Size</code> 是每个 block 的 LDS 用量，调参时也用得上。</p>
 <h4>边界补零</h4>
 <p>M、N、K 都可能不是子块尺寸的倍数（测试里有 17 × 33 × 65、500 × 300 × 257，还有 1 × 1 × 1）。最省心的处理方式是<strong>在加载时补零</strong>：协作加载时，若要读的 A[i][k] 或 B[k][j] 落在矩阵之外，就往 LDS 里写 0。0 参与乘加不改变结果，于是：</p>
 <ul>
@@ -869,12 +903,16 @@ __global__ void sum_dist(const float* x, int n, const float* p, int m, float* y)
   <li>屏障仍然在所有 <code>if</code> 之外。</li>
 </ul>
 <div class="callout note" data-title="tiled_gflops 用例：多快算够">
-  <p>M = N = K = 2048，要求 2000 GFLOPS（空闲 MI308X 校准：naive 约 1150；每线程 1 个输出的 16 × 16 分块约 3100；每线程多个输出的参考实现约 4600）。也就是说，一个正确、访存合并、两个屏障都在的基础分块版本就能过线；寄存器分块是继续提速的主要手段。正确性的判定是逐元素误差界 <code>|C − ref| ≤ 1e-5 · Σ|a·b| + 1e-6</code>，与求和顺序无关，K 方向怎么分段都行。</p>
+  <p>M = N = K = 2048，要求 2000 GFLOPS。空闲 MI308X 上实测：naive 约 1150；每线程 1 个输出的 16 × 16 分块约 3100；参考实现（一个简单设计，每线程算几个输出）约 4600。更好的设计可以高得多——例如认真做过寄存器分块的 GEMM 可达约 9500 GFLOPS，而这也只是实测 fp32 吞吐（约 28 TFLOPS）的三分之一左右。所以 4600 只是“过线有余”的参考，远不是上限；一个正确、访存合并、两个屏障都在的基础分块版本就能过线，寄存器分块是继续提速的主要手段。</p>
+  <p>和 a2、a3 不同，这里是绝对阈值：计算密集的 kernel 没有像“拷贝带宽”那样现成的同进程基准。机器繁忙时会偏慢，失败信息会附上当前 GPU 占用，先用 <code>rocm-smi</code> 确认再重跑。正确性的判定是逐元素误差界 <code>|C − ref| ≤ 1e-5 · Σ|a·b| + 1e-6</code>：它比随机输入下 fp32 的典型舍入误差宽松得多，对任何合理的求和顺序都成立，K 方向怎么分段都行。</p>
+</div>
+<div class="callout warn" data-title="判分抓不到的两种 bug">
+  <p>有两类错误在本机上几乎不会让测试失败，只能靠你自己推理排除：① <strong>漏掉屏障 ②</strong>（§5.3 的读后写）。实测把它删掉的分块 GEMM 在所有用例上反复运行都“碰巧”算对，但它仍然是数据竞争，换个尺寸、换个负载、换个编译器版本就可能出错。② <strong>累加器没有初始化</strong>：<code>float acc[TM][TN];</code> 不写 <code>= {}</code> 是未定义行为，编译器这次恰好当成 0，下次未必。“全部 PASS”不能证明没有这两个问题——写完后对照 §5.3 逐条检查。</p>
 </div>
 
 <h3 id="s5-5"><span class="sec">§5.5</span>展望：MFMA（Lab 4）</h3>
 <p>到目前为止，所有乘加都由向量单元完成，每个 lane 每次算一个（或用 packed 指令算两个）fp32 FMA。CDNA3 的每个 CU 里还有专门的<strong>矩阵核心（Matrix Core）</strong>，通过 <strong>MFMA</strong>（Matrix Fused Multiply-Add）指令使用：一条指令由整个 wavefront 协作，直接完成一个小矩阵乘（例如 32 × 32 × 8），操作数和结果分布在 64 个 lane 的寄存器里。</p>
-<p>对 fp32 而言，CDNA3 的矩阵峰值与向量峰值相同（MI300X 都是 163.4 TFLOPS），MFMA 的威力在低精度：按 MI300X 数据表的 fp16 / bf16 稠密峰值 1307.4 TFLOPS 折算，每 CU 每周期 2048 FLOP，是 fp32 向量的 8 倍；代入本机得 80 × 2048 × 1.85 GHz ≈ 303 TFLOPS。Lab 4 会把本节的分块结构（行块 × 列块、K 方向循环、LDS 中转、两次同步）原封不动地搬过去，只是把最内层的标量乘加换成 MFMA——所以现在把分块想透，后面会轻松很多。</p>
+<p>对 fp32 而言，CDNA3 的矩阵峰值与向量峰值相同（MI300X 都是 163.4 TFLOPS），MFMA 的威力在低精度：按 MI300X 数据表的 fp16 / bf16 稠密峰值 1307.4 TFLOPS 折算，每 CU 每周期 2048 FLOP，是 fp32 向量的 8 倍；代入本机得 80 × 2048 × 1.85 GHz ≈ 303 TFLOPS（理论值；和 fp32 一样要打频率折扣，本机按约 1.4 GHz 实测 bf16 MFMA 约 230 TFLOPS）。Lab 4 会把本节的分块结构（行块 × 列块、K 方向循环、LDS 中转、两次同步）原封不动地搬过去，只是把最内层的标量乘加换成 MFMA——所以现在把分块想透，后面会轻松很多。</p>
 
 <div class="assignment-card" data-assign="a4" data-lab="lab1-hip-basics" data-path="lab1-hip-basics/a4-gemm/gemm.hip" data-title="GEMM：naive → LDS 分块">
   <p>Part A：每个线程算 C 的一个元素（TODO a4-1，§5.1）。Part B：<strong>自主设计</strong> LDS 分块 GEMM，只给接口——tile 尺寸、block 形状、每线程输出数、LDS 摆放、K 方向循环、边界处理都由你决定（a4-2，§5.2–5.4）。完成后在 answers.md 写下设计说明；书面问题 2 要用 §1.3 表中的 fp32 向量峰值。</p>
@@ -915,12 +953,13 @@ rocprofv3 --kernel-trace --stats --output-format csv -d prof -o a3 -- ./build/ru
   <caption>Lab 1 判分输出中常见信息的含义</caption>
   <thead><tr><th>看到</th><th>通常意味着</th><th>先查</th></tr></thead>
   <tbody>
-    <tr><th>得到 nan</th><td>该元素没有任何线程写过</td><td>grid 是否覆盖全部元素（§2.4、§3.4）；grid-stride 循环的步长（§2.5）；ws/out 是否被“累加”而非“写”（§4.1）</td></tr>
+    <tr><th>得到 nan</th><td>该元素没有任何线程写过；或者计算用到了越界读来的值（哨兵区是 NaN）</td><td>grid 是否覆盖全部元素（§2.4、§3.4）；grid-stride 循环的步长（§2.5）；ws/out 是否被“累加”而非“写”（§4.1）；读之前的边界检查、GEMM 加载时是否补零（§5.4）</td></tr>
     <tr><th>越界写 / 哨兵区被改写</th><td>写到了数组之外</td><td>边界检查；转置写出时行列是否互换（§3.4）；GEMM 写 C 的条件（§5.4）</td></tr>
     <tr><th>小尺寸对、大尺寸错</th><td>只有一个 block 或一层循环时恰好正确</td><td>每层/每段之后的屏障（§3.5、§4.2、§5.3）；全局下标里是否漏了 blockIdx；grid-stride 的步长</td></tr>
     <tr><th>结果偶尔错、重跑又对</th><td>数据竞争</td><td>每次读 LDS 前，写它的线程是否一定已写完（§3.5）；屏障 ②（§5.3）</td></tr>
     <tr><th>超时（&gt; 60 s）</th><td>死循环或挂起</td><td>屏障是否在 <code>if</code> 里（§3.5）；循环变量是否在前进</td></tr>
-    <tr><th>结果正确但性能 FAIL</th><td>访存不合并、并行度不够、bank conflict</td><td>§3.1 的口诀；block 数（§4.1）；padding（§3.6）；先用 rocm-smi 确认卡是空闲的</td></tr>
+    <tr><th>结果正确但性能 FAIL</th><td>访存不合并、并行度不够、bank conflict、复用不够</td><td>§3.1 的口诀；block 数（§4.1）；padding（§3.6）；GEMM 的数据复用（§5.2）与寄存器分块（§5.4）；先用 rocm-smi 确认卡是空闲的</td></tr>
+    <tr><th>性能不够（尤其 a4）</th><td>寄存器溢出到 scratch：累加器数组没留在寄存器里</td><td>编译时加 <code>-Rpass-analysis=kernel-resource-usage</code>，看 <code>ScratchSize</code> 与 <code>VGPRs Spill</code> 是否为 0；循环边界是否为编译期常量、是否完全展开（§5.4）</td></tr>
   </tbody>
 </table>
 </div>

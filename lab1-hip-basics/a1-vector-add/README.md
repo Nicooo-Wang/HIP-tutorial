@@ -42,7 +42,7 @@ make run A=a1 CASE=saxpy_needs_stride # 只运行一个用例，看原始输出
 
 三个 saxpy 用例都依次用 alpha = 1.75、−0.5、0 各跑一遍，并检查输入 x 没有被修改。
 
-读失败信息：期望值与“得到 NaN”表示该元素没有任何线程写过（c 初始填的是 NaN）；“越界写”表示写到了数组外的哨兵区。
+读失败信息：“得到 nan”通常表示该元素没有任何线程写过（c 初始填的是 NaN）；也可能是读越界——数组外的哨兵区填的也是 NaN，越界读进来参与加法，结果就是 NaN。“越界写”表示写到了数组外的哨兵区。
 
 ## Hints
 
@@ -55,9 +55,9 @@ make run A=a1 CASE=saxpy_needs_stride # 只运行一个用例，看原始输出
 
 <details><summary>Hint 2（关键步骤）</summary>
 
-- a1-1：用 `blockIdx.x`、`blockDim.x`、`threadIdx.x` 算出 i；只有 `i < n` 才读写。
-- a1-2：grid = (n + block - 1) / block。检查 n = 1 → 1、n = 256 → 1、n = 257 → 2。block 取 64 的倍数（wavefront 大小）、不超过 1024，256 是常见选择。
-- a1-3：循环的起点是本线程的全局下标，条件是 `i < n`，步长 = 网格中线程总数 = `gridDim.x * blockDim.x`。
+- a1-1：和 Lab 0 a1 的全局下标是同一个问题。这次多了两个输入数组——哪些线程连**读**都不该读？
+- a1-2：block 大小有哪几条约束（讲义 §2.4 的三条规则）？grid 的向上取整你在 Lab 0 已经推过一次；用 n = 1、256、257 验算你的表达式。
+- a1-3：一个线程从哪个元素开始？处理完一个元素后，它和网格里其他所有线程“并排”前进一步，这一步跨过的元素个数等于什么——在 kernel 里用哪两个内置变量能算出来（讲义 §2.5）？循环什么时候停？
 
 </details>
 
@@ -69,7 +69,7 @@ make run A=a1 CASE=saxpy_needs_stride # 只运行一个用例，看原始输出
    ```bash
    rocprofv3 --kernel-trace --stats --output-format csv -d prof -o a1 -- ./build/run-a1 add_large
    ```
-   在输出的 `kernel_trace.csv` 里用 `End_Timestamp - Start_Timestamp`（纳秒）算时间，带宽 = 3 × 4 × n 字节 / 时间，与 MI308X HBM 峰值（讲义 §1 表格）比较。差距有多大？可能的原因是什么？
+   （`--output-format csv` 不能省，否则只生成一个 `.db` 数据库文件。）在 `prof/a1_kernel_trace.csv` 里找到 `vector_add_kernel` 那一行，用 `End_Timestamp - Start_Timestamp`（纳秒）算时间，带宽 = 3 × 4 × n 字节 / 时间，与 MI308X HBM 峰值（讲义 §1 表格）比较。差距有多大？可能的原因是什么？
 
 ## 动手探索（不判分）
 
