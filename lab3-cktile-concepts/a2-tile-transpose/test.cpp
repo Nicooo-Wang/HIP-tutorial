@@ -27,9 +27,11 @@ TEST_CASE(large, 1)          { run(R, 2048, 1024, 9); }
 //   32×32 tile 0.455–0.465（最慢的正确设计）。
 //   候选慢 mutant m4（每 block 只有 1 个 wave）实测 0.51–0.52，与参考解几乎无差别（S/N ≈ 1.04 < 2.25），
 //   不能用于区分，已从 mutants 中删除；按兜底规则阈值 = floor2(S_min / 1.67) = floor2(0.323) = 0.32，
-//   再因 32×32 替代设计只有 0.455，为保证其 ≥ 1.5× 余量下调为 0.30（参考解余量 ≥ 1.8×，32×32 ≥ 1.5×）。
-//   本用例的价值是兜底（排除明显低效/错误的实现，如逐元素标量搬运），区分度主要由正确性用例承担。
-constexpr double kCkTransposeRatio = 0.30;
+//   再因 32×32 替代设计只有 0.455，曾下调为 0.30；后因跳过 LDS 的设计约 0.285 再下调（见下）。
+//   评审补充：不用 LDS、直接用 (rows,cols) stride (1,rows) 的输出视图做跨步写的“慢但正确”设计，实测约 0.285（6 次，GPU 2/3）。
+//   为让它保持 ≥1.5× 余量，阈值最终取 0.19（跳过 LDS 约 1.5×、参考解约 2.8×、Lab 1 naive 风格约 0.06 即约 3× 之下）。
+//   本用例只是“不至于慢得离谱”的下限，并不检查是否使用了 LDS（见 README“判分覆盖不到”）。
+constexpr double kCkTransposeRatio = 0.19;
 PERF_CASE(bandwidth, 3) {
   const int rows = 8192, cols = 8192;
   size_t n = size_t(rows) * cols, bytes = n * sizeof(float);
