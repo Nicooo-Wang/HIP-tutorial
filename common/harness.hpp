@@ -32,11 +32,14 @@ struct Result {
 };
 
 inline void fail(Result& R, const char* fmt, ...) {
-  char buf[1024];
-  va_list ap;
+  va_list ap, ap2;
   va_start(ap, fmt);
-  std::vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_copy(ap2, ap);
+  int len = std::vsnprintf(nullptr, 0, fmt, ap);
   va_end(ap);
+  std::string buf(len > 0 ? size_t(len) : 0, '\0');
+  if (len > 0) std::vsnprintf(&buf[0], size_t(len) + 1, fmt, ap2);
+  va_end(ap2);
   R.passed = false;
   if (!R.msg.empty()) R.msg += "\n";
   R.msg += buf;
@@ -80,7 +83,9 @@ struct Rng {
   float uniform(float lo, float hi) {
     return lo + (hi - lo) * float((next() >> 40) * (1.0 / 16777216.0));
   }
-  int randint(int lo, int hi) { return lo + int(next() % uint64_t(hi - lo + 1)); }
+  int randint(int lo, int hi) {
+    if (hi < lo) std::swap(lo, hi);
+    return lo + int(next() % uint64_t(hi - lo + 1)); }
 };
 
 inline std::vector<float> random_floats(size_t n, uint64_t seed, float lo = -1.f, float hi = 1.f) {
@@ -88,6 +93,14 @@ inline std::vector<float> random_floats(size_t n, uint64_t seed, float lo = -1.f
   std::vector<float> v(n);
   for (auto& x : v) x = r.uniform(lo, hi);
   return v;
+}
+
+// 全局（与模板参数无关）的哨兵序号：任意类型的相邻缓冲区哨兵都不同。
+inline unsigned char next_guard_pattern() {
+  static const unsigned char kPatterns[] = {0xA5, 0x5A, 0xC3, 0x3C, 0x96, 0x69, 0x81, 0x7E,
+                                            0xB2, 0x4D, 0xD7, 0x28, 0xE1, 0x1E, 0x8B, 0x74};
+  static int counter = 0;
+  return kPatterns[counter++ % 16];
 }
 
 // ---------------- 带哨兵的设备缓冲区：检测越界写 ----------------
@@ -100,9 +113,7 @@ struct GuardedBuffer {
   unsigned char pattern;
 
   explicit GuardedBuffer(size_t n_) : n(n_) {
-    static const unsigned char kPatterns[] = {0xA5, 0x5A, 0xC3, 0x3C, 0x96, 0x69};
-    static int counter = 0;
-    pattern = kPatterns[counter++ % 6];
+    pattern = next_guard_pattern();
     HIP_CHECK(hipMalloc(&raw, bytes() + 2 * kGuardBytes));
     HIP_CHECK(hipMemset(raw, pattern, bytes() + 2 * kGuardBytes));
   }
@@ -157,7 +168,10 @@ inline bool check_close(Result& R, const std::vector<float>& got, const std::vec
   size_t bad = 0, first = 0;
   for (size_t i = 0; i < got.size(); ++i) {
     double g = got[i], e = ref[i];
-    bool ok = std::isfinite(g) && std::fabs(g - e) <= atol + rtol * std::fabs(e);
+    bool ok;
+    if (std::isnan(e)) ok = std::isnan(g);
+    else if (std::isinf(e)) ok = (g == e);
+    else ok = std::isfinite(g) && std::fabs(g - e) <= atol + rtol * std::fabs(e);
     if (!ok && bad++ == 0) first = i;
   }
   if (bad) {
@@ -256,6 +270,11 @@ inline int run_main(int argc, char** argv) {
       if (c.name == argv[2]) {
         Result R;
         run_one(c, R);
+        if (!std::isfinite(R.metric)) {
+          R.metric = 0.0;
+          if (!R.msg.empty()) R.msg += "\n";
+          R.msg += "注意: metric 不是有限值，已置 0";
+        }
         std::fflush(stdout);
         std::printf("\n@@RESULT {\"name\":\"%s\",\"passed\":%s,\"msg\":\"%s\",\"metric\":%.6g,\"unit\":\"%s\"}\n",
                     c.name.c_str(), R.passed ? "true" : "false", json_escape(R.msg).c_str(), R.metric,
@@ -265,18 +284,28 @@ inline int run_main(int argc, char** argv) {
     std::fprintf(stderr, "未知用例: %s\n", argv[2]);
     return 3;
   }
-  int pass = 0;
+  int pass = 0, total = 0;
+  if (argc >= 2) {
+    bool found = false;
+    for (auto& c : cases) found |= (c.name == argv[1]);
+    if (!found) {
+      std::fprintf(stderr, "未知用例: %s\n", argv[1]);
+      return 3;
+    }
+  }
   for (auto& c : cases) {
     if (argc >= 2 && c.name != argv[1]) continue;
     Result R;
     run_one(c, R);
+    ++total;
     pass += R.passed;
     std::printf("%-40s %s", c.name.c_str(), R.passed ? "OK" : "FAIL");
     if (c.perf) std::printf("  (%.1f %s)", R.metric, R.unit.c_str());
     std::printf("\n");
     if (!R.msg.empty()) std::printf("    %s\n", R.msg.c_str());
   }
-  return 0;
+  std::printf("通过 %d/%d\n", pass, total);
+  return pass == total ? 0 : 1;
 }
 
 }  // namespace hk
