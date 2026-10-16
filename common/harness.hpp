@@ -2,6 +2,7 @@
 #pragma once
 #include <hip/hip_runtime.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -95,36 +96,41 @@ inline std::vector<float> random_floats(size_t n, uint64_t seed, float lo = -1.f
   return v;
 }
 
-// 全局（与模板参数无关）的哨兵序号：任意类型的相邻缓冲区哨兵都不同。
-// 哨兵字节的选取：把重复字节按 float32 解码，指数位必须很大（字节取 0x60–0x7F 或 0xE0–0xFF，数值约 ±1e19 ~ 3e38，
-// 0xFF 为 NaN）。否则像 0xA5（≈-2e-16）、0x1E 这类哨兵读成 float 接近 0，学生 kernel 越界读入后乘以它几乎不改变结果，
-// 漏掉的边界错误就能蒙混过关；取巨大值后任何越界读都会明显污染结果。
-inline unsigned char next_guard_pattern() {
-  static const unsigned char kPatterns[] = {0x6A, 0xE5, 0x75, 0xF2, 0x7F, 0xEA, 0x63, 0xFB,
-                                            0x6C, 0xE1, 0x79, 0xF6, 0x66, 0xED, 0x7B, 0xFD};
-  static int counter = 0;
-  return kPatterns[counter++ % 16];
+// 哨兵（guard）值：每个缓冲区一个 32 位字，是带"载荷"的 quiet NaN：0x7FC00000 | payload，payload 由全局
+// （与模板参数无关的）计数器生成，非 0 且相邻缓冲区各不相同。
+// - NaN：越界读到的值只要参与运算（哪怕乘以 0），结果就是 NaN，必然被结果比较发现；
+// - payload 各不相同且非 0：防止"越界读输入哨兵、再越界写进输出哨兵"恰好写回相同值，
+//   也防止 GPU 运算产生的规范 NaN（0x7FC00000）写进哨兵区而漏检。
+// 作为 int 读时它是一个约 2.1e9 的大正数，同样会明显污染结果。
+inline uint32_t next_guard_word() {
+  static uint32_t counter = 0;
+  counter = counter % 0x3FFFFFu + 1;  // 1 .. 0x3FFFFF，循环
+  return 0x7FC00000u | counter;
 }
 
-// ---------------- 带哨兵的设备缓冲区：检测越界写 ----------------
+// ---------------- 带哨兵的设备缓冲区：检测越界写 / 让越界读产生 NaN ----------------
 template <class T>
 struct GuardedBuffer {
-  static constexpr size_t kGuardBytes = 4096;
+  // 每侧 256 KiB：足以覆盖"越界一整个 tile 行""稀疏地跳出几千个元素"这类错误。
+  static constexpr size_t kGuardBytes = size_t(256) << 10;
   size_t n;
   char* raw = nullptr;
-  // 每个缓冲区用不同的哨兵字节：防止"越界读到输入哨兵、再越界写进输出哨兵"恰好写回相同值而漏检。
-  unsigned char pattern;
+  // 本缓冲区的哨兵字（quiet NaN + 载荷）。整个分配（含数据区初值）都按 32 位字填充为该值。
+  uint32_t pattern;
 
   explicit GuardedBuffer(size_t n_) : n(n_) {
-    pattern = next_guard_pattern();
-    HIP_CHECK(hipMalloc(&raw, bytes() + 2 * kGuardBytes));
-    HIP_CHECK(hipMemset(raw, pattern, bytes() + 2 * kGuardBytes));
+    pattern = next_guard_word();
+    HIP_CHECK(hipMalloc(&raw, total_bytes()));
+    HIP_CHECK(hipMemsetD32(reinterpret_cast<hipDeviceptr_t>(raw), int(pattern), total_bytes() / 4));
+    HIP_CHECK(hipDeviceSynchronize());
   }
   GuardedBuffer(const GuardedBuffer&) = delete;
   GuardedBuffer& operator=(const GuardedBuffer&) = delete;
   ~GuardedBuffer() { (void)hipFree(raw); }
 
   size_t bytes() const { return n * sizeof(T); }
+  // 数据区按 4 字节向上取整，保证整个分配是 32 位字的整数倍
+  size_t total_bytes() const { return 2 * kGuardBytes + (bytes() + 3) / 4 * 4; }
   T* get() { return reinterpret_cast<T*>(raw + kGuardBytes); }
   void upload(const std::vector<T>& h) {
     HIP_CHECK(hipMemcpy(get(), h.data(), bytes(), hipMemcpyHostToDevice));
@@ -138,18 +144,27 @@ struct GuardedBuffer {
   void fill(T v) { upload(std::vector<T>(n, v)); }
   bool guards_intact(Result& R) {
     HIP_CHECK(hipDeviceSynchronize());
-    std::vector<unsigned char> g(kGuardBytes);
-    const char* where[2] = {"之前", "之后"};
-    const char* ptrs[2] = {raw, raw + kGuardBytes + bytes()};
-    for (int s = 0; s < 2; ++s) {
-      HIP_CHECK(hipMemcpy(g.data(), ptrs[s], kGuardBytes, hipMemcpyDeviceToHost));
-      for (size_t i = 0; i < kGuardBytes; ++i)
-        if (g[i] != pattern) {
-          fail(R, "越界写：缓冲区（%zu 个元素）%s的哨兵区被改写（距边界 %zu 字节）", n, where[s],
-               s == 0 ? kGuardBytes - i : i + 1);
-          return false;
-        }
-    }
+    // 两侧哨兵区：[0, kGuardBytes) 与 [kGuardBytes + bytes(), total_bytes())。
+    // 整个分配按 32 位字填充，所以偏移 o 处的字节必须等于 pattern 的第 (o % 4) 个字节
+    // ——等价于逐 32 位字比较，同时也覆盖了数据区末尾与字边界不对齐（如 2 字节类型、奇数个元素）的情形。
+    unsigned char pb[4];
+    std::memcpy(pb, &pattern, 4);
+    const size_t tail0 = kGuardBytes + bytes();
+    std::vector<unsigned char> g(total_bytes() - tail0);
+    // 之前：从紧邻数据区处往前找，报告离边界最近的被改写字节
+    HIP_CHECK(hipMemcpy(g.data(), raw, kGuardBytes, hipMemcpyDeviceToHost));
+    for (size_t d = 1; d <= kGuardBytes; ++d)
+      if (g[kGuardBytes - d] != pb[(kGuardBytes - d) % 4]) {
+        fail(R, "越界写：缓冲区（%zu 个元素）之前的哨兵区被改写（距边界 %zu 字节）", n, d);
+        return false;
+      }
+    // 之后
+    HIP_CHECK(hipMemcpy(g.data(), raw + tail0, g.size(), hipMemcpyDeviceToHost));
+    for (size_t i = 0; i < g.size(); ++i)
+      if (g[i] != pb[(tail0 + i) % 4]) {
+        fail(R, "越界写：缓冲区（%zu 个元素）之后的哨兵区被改写（距边界 %zu 字节）", n, i + 1);
+        return false;
+      }
     return true;
   }
 };
@@ -204,26 +219,24 @@ inline bool check_equal(Result& R, const std::vector<I>& got, const std::vector<
 }
 
 // ---------------- 计时 ----------------
+// 每次迭代计时 = hipDeviceSynchronize() 之后到 launch + hipDeviceSynchronize() 返回的主机墙钟（steady_clock），取最优。
+// 用整卡同步夹住而不是默认流上的 event：即使 launch 函数把 kernel 发到别的（非阻塞）流上，也会被如实计时。
+// 代价是每次多约 10–20 µs 的同步开销；性能用例的单次耗时都在亚毫秒～毫秒级以上，影响可忽略。
 template <class F>
 inline double time_best_ms(F&& launch, int warmup = 3, int iters = 20) {
   for (int i = 0; i < warmup; ++i) launch();
   HIP_CHECK(hipDeviceSynchronize());
-  hipEvent_t a, b;
-  HIP_CHECK(hipEventCreate(&a));
-  HIP_CHECK(hipEventCreate(&b));
+  HIP_CHECK(hipGetLastError());
   double best = 1e30;
   for (int i = 0; i < iters; ++i) {
-    HIP_CHECK(hipEventRecord(a));
+    HIP_CHECK(hipDeviceSynchronize());
+    auto t0 = std::chrono::steady_clock::now();
     launch();
-    HIP_CHECK(hipEventRecord(b));
-    HIP_CHECK(hipEventSynchronize(b));
-    float ms = 0;
-    HIP_CHECK(hipEventElapsedTime(&ms, a, b));
-    best = std::min(best, double(ms));
+    HIP_CHECK(hipDeviceSynchronize());
+    auto t1 = std::chrono::steady_clock::now();
+    best = std::min(best, std::chrono::duration<double, std::milli>(t1 - t0).count());
   }
   HIP_CHECK(hipGetLastError());
-  HIP_CHECK(hipEventDestroy(a));
-  HIP_CHECK(hipEventDestroy(b));
   return best;
 }
 

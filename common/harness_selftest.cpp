@@ -37,6 +37,83 @@ TEST_CASE(guard_detects_underflow, 1) {
   if (b.guards_intact(tmp)) hk::fail(R, "前向越界写未被检测到");
 }
 
+__global__ void write_canonical_nan(float* p) { p[0] = __int_as_float(0x7FC00000); }
+__global__ void write_u16(unsigned short* p, int i) { p[i] = 0; }
+
+__global__ void write_at(float* p, long long off) { p[off] = 1.0f; }
+
+TEST_CASE(guard_detects_far_overflow, 1) {
+  // 跳过数据区末尾约 100 KiB 的稀疏越界写也要能发现
+  hk::GuardedBuffer<float> b(1000);
+  write_at<<<1, 1>>>(b.get(), 1000 + 25000);
+  HIP_CHECK(hipDeviceSynchronize());
+  hk::Result tmp;
+  if (b.guards_intact(tmp)) hk::fail(R, "距末尾约 100 KiB 的越界写未被检测到");
+  else if (tmp.msg.find("之后") == std::string::npos) hk::fail(R, "方向报告错误: %s", tmp.msg.c_str());
+}
+
+TEST_CASE(guard_detects_far_underflow, 1) {
+  hk::GuardedBuffer<float> b(1000);
+  write_at<<<1, 1>>>(b.get(), -25000);
+  HIP_CHECK(hipDeviceSynchronize());
+  hk::Result tmp;
+  if (b.guards_intact(tmp)) hk::fail(R, "距开头约 100 KiB 的前向越界写未被检测到");
+  else if (tmp.msg.find("之前") == std::string::npos || tmp.msg.find("99997 字节") == std::string::npos)
+    hk::fail(R, "方向/距离报告错误: %s", tmp.msg.c_str());
+}
+
+TEST_CASE(guard_detects_canonical_nan_write, 1) {
+  // 往哨兵区写入规范 NaN（GPU 运算产生的 NaN）也必须被发现：哨兵的 NaN 载荷非 0
+  hk::GuardedBuffer<float> b(1000);
+  write_canonical_nan<<<1, 1>>>(b.get() + 1000);
+  HIP_CHECK(hipDeviceSynchronize());
+  hk::Result tmp;
+  if (b.guards_intact(tmp)) hk::fail(R, "写入规范 NaN 的越界写未被检测到");
+}
+
+// 越界读到的值哪怕乘以 0 也必须污染结果（哨兵是 NaN）
+__global__ void oob_read_times_zero(const float* in, float* out, int n) {
+  out[0] = in[0] + 0.0f * in[n];       // 紧邻末尾
+  out[1] = in[0] + 0.0f * in[n + 4096];  // 末尾之后 16 KiB
+  out[2] = in[0] + 0.0f * in[-1];      // 紧邻开头
+  out[3] = in[0] + 0.0f * in[-30000];  // 开头之前约 120 KiB
+}
+
+TEST_CASE(guard_oob_read_times_zero_is_nan, 1) {
+  hk::GuardedBuffer<float> in(1000), out(4);
+  in.fill(2.0f);
+  oob_read_times_zero<<<1, 1>>>(in.get(), out.get(), 1000);
+  auto o = out.download();
+  for (int k = 0; k < 4; ++k)
+    if (!std::isnan(o[k])) hk::fail(R, "第 %d 处越界读 ×0 没有得到 NaN（得到 %g）", k, o[k]);
+  out.guards_intact(R);
+  in.guards_intact(R);
+}
+
+TEST_CASE(guard_pattern_is_payload_nan, 1) {
+  hk::GuardedBuffer<float> a(3), b(5);
+  for (auto* g : {&a, &b}) {
+    float f;
+    std::memcpy(&f, &g->pattern, 4);
+    if (!std::isnan(f) || (g->pattern & 0x7FC00000u) != 0x7FC00000u || (g->pattern & 0x3FFFFFu) == 0)
+      hk::fail(R, "哨兵 0x%08x 不是带非零载荷的 quiet NaN", g->pattern);
+  }
+  // 数据区初值也是本缓冲区的哨兵（未写过的输出读出来是 NaN）
+  auto h = a.download();
+  for (float v : h) if (!std::isnan(v)) { hk::fail(R, "数据区初值不是 NaN"); break; }
+}
+
+TEST_CASE(guard_unaligned_tail, 1) {
+  // 2 字节元素、奇数个：数据区末尾不在 4 字节边界上，紧随其后的 2 个字节也属于哨兵
+  hk::GuardedBuffer<unsigned short> b(7), c(7);
+  hk::Result ok;
+  if (!b.guards_intact(ok)) hk::fail(R, "未越界却报告越界: %s", ok.msg.c_str());
+  write_u16<<<1, 1>>>(c.get(), 7);
+  HIP_CHECK(hipDeviceSynchronize());
+  hk::Result tmp;
+  if (c.guards_intact(tmp)) hk::fail(R, "2 字节元素紧邻末尾的越界写未被检测到");
+}
+
 TEST_CASE(guard_patterns_differ, 1) {
   hk::GuardedBuffer<float> a(16), b(16);
   if (a.pattern == b.pattern) hk::fail(R, "相邻两个缓冲区的哨兵模式相同");
