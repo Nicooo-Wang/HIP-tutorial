@@ -4,7 +4,7 @@
 
 CK-Tile 里的 layout 不是一个公式，而是一个 **tensor descriptor**：一串*坐标变换*（pass_through、merge、unmerge、xor……），把“上层逻辑坐标”一层层翻译成“线性偏移”。同一块内存可以挂上不同的视图（转置、展平、分块、swizzle），全程不搬任何数据。这是之后 LDS 布局和 GEMM tile 划分的基础。
 
-编辑 `a1-layout/layout.hip`，补全 5 个返回 descriptor 的函数（`make_row_major` 已给出作示例）。它们都是 `CK_TILE_HOST_DEVICE constexpr`，测试在设备端对每个上层坐标调用 `calculate_offset`，同时检查上层维度数（`get_num_of_top_dimension()`）。
+编辑 `a1-layout/layout.hip`，补全 5 个返回 descriptor 的函数（`make_row_major` 已给出作示例）。它们都是 `CK_TILE_HOST_DEVICE constexpr`，测试在设备端对每个上层坐标调用 `calculate_offset`，同时检查上层维度数（`get_num_of_top_dimension()`）和每一维的长度（`get_length(number<k>{})`）。
 
 | TODO | 函数 | 上层坐标 → 偏移 | 讲义 |
 |------|------|-----------------|------|
@@ -17,7 +17,7 @@ CK-Tile 里的 layout 不是一个公式，而是一个 **tensor descriptor**：
 注意：
 
 - 骨架里每个函数体都放了一个**能编译但不对**的占位（例如没做变换的 row-major、stride 全为 0 的 naive descriptor），所以原样提交时只有 `row_major` 通过，其余用例都 FAIL，这是预期的。写你的实现时把占位整行替换掉。
-- 上层维度的**个数与顺序**也是答案的一部分：`flattened` 必须是 1 维，`tiled` 必须是 4 维且顺序为 (I, J, ii, jj)。
+- 上层维度的**个数、顺序与长度**都是答案的一部分：`flattened` 必须是 1 维、长度 M·N；`transposed_view` 的上层长度是 (N, M)；`tiled` 必须是 4 维，顺序为 (I, J, ii, jj)，长度为 (M/TM, N/TN, TM, TN)。偏移全对、长度写错的 descriptor 拿去配 tile window 或 pad 时，越界判断就会错。
 
 ## 怎么判分
 
@@ -30,14 +30,14 @@ make run A=a1 CASE=tiled                 # 只运行一个用例，看原始输�
 
 | 用例 | 分值 | 检查什么 |
 |------|------|----------|
-| `row_major` | 1 | 示例函数，两种形状 |
-| `col_major` | 1 | 两种形状（4×8、5×3），所有坐标的偏移 |
-| `transposed_view` | 2 | 两种形状（4×8、6×10），上层形状为 N×M |
-| `xor_swizzled` | 2 | 8×8 和 16×4 两种形状 |
-| `flattened` | 2 | 4×8，32 个坐标的偏移 + 上层维度数应为 1 |
-| `tiled` | 3 | M=8, N=12, TM=4, TN=3；96 个坐标的偏移 + 上层维度数应为 4 |
+| `row_major` | 1 | 示例函数，两种形状 + 各维长度 |
+| `col_major` | 1 | 两种形状（4×8、5×3），所有坐标的偏移 + 各维长度 |
+| `transposed_view` | 2 | 三种形状（4×8、6×10、5×5），上层形状为 N×M；各维长度应为 (N, M) |
+| `xor_swizzled` | 2 | 8×8 和 16×4 两种形状 + 各维长度 |
+| `flattened` | 2 | 4×8，32 个坐标的偏移 + 上层维度数应为 1、长度应为 32 |
+| `tiled` | 3 | (M, N, TM, TN) = (8, 12, 4, 3) 与 (12, 8, 4, 4)：所有坐标的偏移 + 上层维度数应为 4 + 各维长度 |
 
-所有用例都是把 descriptor 在全部上层坐标上的偏移与 CPU 公式逐个比较，并检查输出数组两侧的哨兵区没有被写。失败信息里的“行/列”对 2D 用例就是你的上层坐标 (第 0 维, 第 1 维)；`tiled` 的输出按 (I, J, ii, jj) 字典序排成一行，最后一项是上层维度数。
+所有用例都是把 descriptor 在全部上层坐标上的偏移与 CPU 公式逐个比较，并检查输出数组两侧的哨兵区没有被写；偏移全对之后再检查各维长度，长度不对时会打印“上层第 k 维的长度期望 …，得到 …”。失败信息里的“行/列”对 2D 用例就是你的上层坐标 (第 0 维, 第 1 维)；`tiled` 的输出按 (I, J, ii, jj) 字典序排成一行，最后一项是上层维度数。
 
 ## Hints
 
@@ -56,7 +56,7 @@ make run A=a1 CASE=tiled                 # 只运行一个用例，看原始输�
 - a1-2：变换列表里是两个 pass_through，长度分别对应下层第 0、1 维。第三个参数告诉库“它们吃下层的哪一维”，第四个参数告诉库“它们产出上层的第几维”。要让上层第 0 维是 j，这个编号该怎么给？
 - a1-3：merge 变换的参数是“被合并的各维长度”，下层吃两个维度，上层产出一个维度。合并时哪一维是高位、哪一维是低位，由参数顺序决定。
 - a1-4：两个 unmerge，各吃一个下层维度。unmerge 的长度列表里，先写的是高位还是低位？产出的上层维度编号用两个 sequence 各写 2 个数，想清楚上层 0..3 分别是 I、J、ii、jj 中的哪个，再决定每个 sequence 里写哪两个数。
-- a1-5：xor 变换吃下层两个维度、产出上层两个维度。先去源码 `/opt/rocm/include/ck_tile/core/tensor/coordinate_transform.hpp` 读 `struct xor_t` 的 `calculate_lower_index`，弄清它把上层哪个分量与哪个分量异或，再决定参数里长度的写法。
+- a1-5：xor 变换吃下层两个维度、产出上层两个维度。先去源码 `/opt/rocm/include/ck_tile/core/algorithm/coordinate_transform.hpp` 读 `struct xor_t` 的 `calculate_lower_index`，弄清它把上层哪个分量与哪个分量异或，再决定参数里长度的写法。
 
 </details>
 
@@ -70,7 +70,7 @@ make run A=a1 CASE=tiled                 # 只运行一个用例，看原始输�
 
 ## 判分覆盖不到的 bug
 
-判分只比较偏移与维度数，不检查你用了哪些变换。下面这些做法也能拿满分，但请自己分辨它们是不是你想要的：
+判分只比较偏移、维度数与各维长度，不检查你用了哪些变换。下面这些做法也能拿满分，但请自己分辨它们是不是你想要的：
 
 - **绕开变换直接用 naive descriptor。** 例如 `transposed_view` 直接写长度 (N, M)、stride (1, N) 的 naive descriptor，`tiled` 直接写 4 维长度加手算 stride，结果完全相同。这些是合法的等价写法，但本作业想让你练的是“用变换组合出视图”，因为后续 LDS swizzle 与 tile distribution 都是靠变换组合出来的，手算 stride 做不到 merge 或 xor。
 - **`flattened` 不基于 `make_row_major`。** 直接 `make_naive_tensor_descriptor_packed(make_tuple(number<M*N>{}))` 也满分；但这样你没有练到 merge 变换，也看不出“展平”和底座的关系。
