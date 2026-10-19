@@ -73,7 +73,7 @@ make run A=a1 CASE=tiled                 # 只运行一个用例，看原始输�
 判分只比较偏移、维度数与各维长度，不检查你用了哪些变换。下面这些做法也能拿满分，但请自己分辨它们是不是你想要的：
 
 - **绕开变换直接用 naive descriptor。** 例如 `transposed_view` 直接写长度 (N, M)、stride (1, N) 的 naive descriptor，`tiled` 直接写 4 维长度加手算 stride，结果完全相同。这些是合法的等价写法，但本作业想让你练的是“用变换组合出视图”，因为后续 LDS swizzle 与 tile distribution 都是靠变换组合出来的，手算 stride 做不到 merge 或 xor。
-- **`flattened` 不基于 `make_row_major`。** 直接 `make_naive_tensor_descriptor_packed(make_tuple(number<M*N>{}))` 也满分；但这样你没有练到 merge 变换，也看不出“展平”和底座的关系。
+- **`flattened` 不基于 `make_row_major`。** 直接写一维的 naive descriptor `make_naive_tensor_descriptor(make_tuple(number<M*N>{}), make_tuple(number<1>{}))`（长度 M·N、stride 1）也满分；但这样你没有练到 merge 变换，也看不出“展平”和底座的关系。
 - 测试只覆盖少数几个形状。如果你的写法依赖了形状的特殊性（例如只在 M == N 时成立），换个形状才会暴露。请自己再试几组 M、N（包括不整除的情形会发生什么？）。
 - 测试在设备端的单线程里调用，不涉及性能，也没有检查你的 descriptor 在 `constexpr` 下的编译期行为之外的任何事情。
 

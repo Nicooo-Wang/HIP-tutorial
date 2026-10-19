@@ -51,8 +51,6 @@ make run A=a3 CASE=shfl_bandwidth        # 只运行一个用例，看原始输�
 
 读失败信息：“得到 nan”说明 `out` 没被写过、或者某个部分和没被写过（`ws`、`out` 初始都填 NaN），也可能是读越界——`in` 前后的哨兵区填的也是 NaN。
 
-> **判分覆盖不到的 bug。** ① 树形归约里漏掉某一层的 `__syncthreads()` 是数据竞争：本机上精确用例（整组重复 3 遍）通常能抓到，但不保证每次都抓到。② `acc` 等累加变量忘了初始化是未定义行为，编译器可能恰好给出 0。“全部 PASS”不能证明没有这两类问题——对每一层问自己讲义 §4.2 的两个问题。
-
 ## Hints
 
 <details><summary>Hint 1（方向）</summary>
@@ -73,6 +71,10 @@ make run A=a3 CASE=shfl_bandwidth        # 只运行一个用例，看原始输�
 
 </details>
 
+## 判分覆盖不到的 bug
+
+① 树形归约里漏掉某一层的 `__syncthreads()` 是数据竞争：本机上精确用例（整组重复 3 遍）通常能抓到，但不保证每次都抓到。② `acc` 等累加变量忘了初始化是未定义行为，编译器可能恰好给出 0。“全部 OK”不能证明没有这两类问题——对每一层问自己讲义 §4.2 的两个问题。
+
 ## 书面问题（写到 ../answers.md）
 
 1. 把 `wave_reduce` 的 offset 从 16 开始（写死 32 线程的 wavefront）在 NVIDIA GPU 上是对的，在 MI308X 上为什么错？
@@ -83,4 +85,4 @@ make run A=a3 CASE=shfl_bandwidth        # 只运行一个用例，看原始输�
    rocprofv3 --kernel-trace --stats --output-format csv -d prof -o a3 -- ./build/run-a3 shfl_bandwidth
    ```
    在 `prof/a3_kernel_trace.csv` 里按 `Grid_Size_X`（线程总数）区分两遍（讲义 §6）。
-4. （思考，讲义没有直接讲，属于拓展）能否只用一个 kernel 完成归约？（提示：atomic，或“最后一个完成的 block 负责汇总”——这是后面 mega kernel 中常见的跨 block 同步手法的雏形。）
+4. （思考，属于拓展；`atomicAdd` 的语义见讲义 §4.5 末尾）能否只用一个 kernel 完成归约？（提示：atomic，或“最后一个完成的 block 负责汇总”——这是后面 mega kernel 中常见的跨 block 同步手法的雏形。）

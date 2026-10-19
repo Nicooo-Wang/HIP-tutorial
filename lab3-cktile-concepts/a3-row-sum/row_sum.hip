@@ -14,6 +14,10 @@ using namespace ck_tile;
 //   边界：行数、列数都可能不是 tile 的整数倍（复习 a2 的 pad_tensor_view）。
 //   性能：bandwidth_aligned 用例中 cols 是 4 的倍数；想想 make_naive_tensor_view 的倒数第二个参数什么时候可以写 4。
 //   stream 原样传给 kernel 启动语句。
+//   kernel 要你自己新增：写在下面这个标记处（文件作用域、launch_ck_row_sum 之前；模板 kernel 不能定义在函数体内），
+//   个数、名字随你；再在 launch_ck_row_sum 里按 cols 分派、算好 grid 并启动它（讲义 §3.5）。
+// >>> 你的 kernel（及辅助函数）<<<
+
 void launch_ck_row_sum(const float* in, float* out, int rows, int cols, hipStream_t stream) {
   // >>> 你的代码 <<<
 }

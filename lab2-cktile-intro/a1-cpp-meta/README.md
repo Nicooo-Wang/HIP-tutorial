@@ -68,13 +68,13 @@ make run A=a1 CASE=e2_row_major_strides  # 只运行一个用例，看原始输�
 
 </details>
 
+## 判分覆盖不到的 bug
+
+- 测试检查的是结果，不检查你有没有用折叠表达式、`static_for` 或 `if constexpr`；写成手工展开也能得分。但这几种写法是后续 Lab 读 CK-Tile 代码时的“日常”，建议按提示的方式写一遍。
+- E3 的循环会被完全展开；你可以用 `--save-temps` 看看生成的汇编里有没有循环（命令见讲义 §2.3 的“怎样看生成的汇编”；动手探索，不判分）。
+
 ## 书面问题（写到 ../answers.md）
 
 1. `static_for` 的循环变量为什么不能是普通 `int`？（提示：`number<I>` 能用于模板参数。）
 2. `number<3>{} + number<4>{}` 在 CK-Tile 中结果的类型是什么？去 `/opt/rocm/include/ck_tile/core/numeric/integral_constant.hpp` 找到答案，并引用相关代码行。
 3. 为什么 CK-Tile 要把 tile 尺寸等参数放进类型里，而不是作为普通函数参数？
-
-## 判分覆盖不到的
-
-- 测试检查的是结果，不检查你有没有用折叠表达式、`static_for` 或 `if constexpr`；写成手工展开也能得分。但这几种写法是后续 Lab 读 CK-Tile 代码时的“日常”，建议按提示的方式写一遍。
-- E3 的循环会被完全展开；你可以用 `--save-temps` 看看生成的汇编里有没有循环（动手探索，不判分）。

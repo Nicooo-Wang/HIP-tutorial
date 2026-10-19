@@ -44,7 +44,7 @@ make run A=a2 CASE=one_tile              # 只运行一个用例，看原始输�
 | `tiny` | 2 | n = 1、3、64：比一个 tile 小得多 |
 | `ragged` | 3 | n = 1023、4097、1000003：最后一个 tile 不满，不能越界写 |
 | `large` | 1 | n = 2²⁴ + 5：大数组 |
-| `bandwidth`（性能） | 2 | n = 2²⁶：带宽不低于同进程实测 D2D 拷贝带宽的 55%。注意这个 D2D 拷贝（hipMemcpy device-to-device）只是自校准的基准，不是硬上限：写得好的 kernel 可以超过它（参考答案约为其 1.45 倍）。`make run A=a2 CASE=bandwidth` 会同时打印本次带宽、同次实测拷贝带宽和比值 |
+| `bandwidth`（性能） | 2 | n = 2²⁶：比值（= 带宽 / 同进程实测 D2D 拷贝带宽，Lab 1 §1.3）不低于 0.55（55%）。注意这个 D2D 拷贝（hipMemcpy device-to-device）只是自校准的基准，不是硬上限：写得好的 kernel 可以超过它（参考答案的比值约 1.45）。`make run A=a2 CASE=bandwidth` 会同时打印本次带宽、同次实测拷贝带宽和比值 |
 
 所有正确性用例逐位比较结果，并检查数组外的哨兵区没有被写、输入 a 和 b 没有被修改。读失败信息的方法同 Lab 1 a1：“得到 nan”表示该元素没有任何线程写过。`one_tile` 里“前 256 个元素对、后面全错”之类的模式，本身就是线索。
 

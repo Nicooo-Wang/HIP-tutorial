@@ -57,4 +57,40 @@
 
 ## 跨 Lab 连续性审查
 
-（待补）
+按 Lab 0 → 3 的顺序通读讲义、README、骨架与 answers.md，只看跨 Lab 的衔接，共 26 条：断层/矛盾 4、前向引用 7、术语不一致 7、小问题 8。全部已处理（F2 以“明确推迟到 Lab 4”的方式处理），§ 编号未变。
+
+**断层 / 矛盾**
+- C1 Lab 3 §3.2 说学生在 Lab 1 a3 写的是 `for (d = 32; …)`，与 Lab 1 §4.3“用 warpSize 推出”矛盾 → 改为“和你在 Lab 1 a3 写的 `wave_reduce` 同一个树形结构（delta 从 warpSize 推出）”，不再给出代码。
+- C2 Lab 2/3 写死 64 与 Lab 1 warpSize 原则未对上 → Lab 2 §3.2 首次出现处加说明框：warpSize 是运行期值，而分布是编译期类型；CK-Tile 用 `constexpr get_warp_size()`（`core/arch/arch.hpp` 第 63–70 行，gfx9 返回 64，`get_warp_id` 在第 106 行用它），只编 gfx942 所以 64 确定；运行期用 warpSize、编译期用 `get_warp_size()` 或 64 + `static_assert`（已在 gfx942/gfx1100 上验证 static_assert 行为）。正文 `/ 64` 改为 `/ get_warp_size()`，Lab 2/3 清单的“= 64”注明即 `get_warp_size()`。kernel 代码未改。
+- C3 README“每个 Lab 的收尾作业是自主设计”不实 → 改为逐 Lab 说明：Lab 0 填空；Lab 1 填函数体 → 补全设计（a2）→ 自主设计（a4）；Lab 2 回到填空；Lab 3 填空 → 补全设计（a2）→ 自主设计（a3）。
+- C4 Lab 3 a2 书面问题 3 依赖 Lab 1 参考答案内部细节 → 改为与“你自己的 Lab 1 a2”比较（在 lab1 下 `make run A=a2 CASE=lds_bandwidth`，借本作业同时段的拷贝带宽换算比值），Lab 1 §3.7 的 0.31–0.35 只作参照；answers.md 模板同步加一行。
+
+**前向引用**
+- F1 `--save-temps` 从未讲过 → Lab 2 §2.3 首次使用处加说明框：完整命令、在临时目录生成、`<源名>-hip-amdgcn-amd-amdhsa-gfx942.s`、按 kernel 名搜修饰名、到 `s_endpgm` 为止、`.bc` 用 llvm-dis；作业文件无 kernel 时如何改 `make run` 背后的命令（实测文件名 `test-hip-…-gfx942.s`）。Lab 2 a1 README 指向这里。
+- F2 Lab 1 承诺的 b64/b128 bank 分组未兑现 → Lab 1 §3.6 改为“Lab 3 §1.6 会再提，具体规则留到 Lab 4”；Lab 3 §1.6 加说明框：本节与小部件按 4 字节/半 wavefront 模型，按 4 个一组 swizzle 只保证向量访问不被拆开、行首对齐不变，b128 下是否无冲突留到 Lab 4 按其分批规则重算，本 Lab 作业用不到。未在本期给出 b128 分批规则（未经本机实测，不写）。
+- F3 `__device__` 函数与模板 kernel 未讲 → Lab 1 §2.2 补第五点；a3 骨架头注释指向 §2.2。
+- F4 编译失败的判分输出未展示 → Lab 0 §1.3 加第三种失败信息“aK: 编译失败（0 分）”+ 从第一条 `error:` 读起。
+- F5 Lab 3 a1 README 用了未讲的 `make_naive_tensor_descriptor_packed` → 改为讲义讲过的一维 naive descriptor 写法。
+- F6 Lab 3 a3 没说 kernel 写在哪 → 骨架加 `// >>> 你的 kernel（及辅助函数）<<<` 标记与说明（文件作用域、`launch_ck_row_sum` 之前），README 同步；根 README 学习流程补“自主设计题在标记之外新增函数，位置见该题 README”。
+- F7 原子操作从未讲过 → Lab 1 §4.5 加 `atomicAdd(float*, float)` 最小说明（返回旧值、同址串行化、顺序不定）；a3 书面问题 4 指向它。
+
+**术语不一致**
+- T1 warp 含义 → Lab 0 术语表注明 CK-Tile 的 warp = wavefront（64 lane）；Lab 2 §3.2 说明框点明 `get_warp_id()` 即 Lab 1 的 `wave_id`。
+- T2 block/workgroup、跨 CU → README“每个 block（AMD 文档叫 workgroup）”、Lab 8“跨 block 同步”；site 同步（LDS 64 KiB / block、跨 block 同步）。
+- T3 OK vs PASS → 全部改为“全部 OK”；Lab 0 §1.4 说明 `make run` 每用例一行 OK/FAIL、汇总行“通过 x/y”、不自动挑卡。
+- T4 “判分覆盖不到的 bug”格式 → 统一为独立 `## 判分覆盖不到的 bug`，放在 Hints 与书面问题之间（Lab 1 a2/a3/a4 由引用块改为独立节，Lab 2 a1 补“bug”并移位）。
+- T5 Lab 2 标题 → `<title>`、页头、目录标题改为“C++ 速成 + CK-Tile 入门”。
+- T6 带宽表示法 → Lab 1 §1.3 定义“比值 = 你的带宽 ÷ 同进程拷贝带宽”（14% 即 0.14）；Lab 2 a2、Lab 3 a2/a3 README 的阈值与参考数字统一写成比值。
+- T7 Lab 3 a3 Hint 2 的“三层” → 改为“三步（线程内 → 跨 lane → 写回）”。
+
+**小问题**
+- M1 页脚 → 四份讲义统一“上一课：Lab N 标题 · 下一课：Lab N+1 标题”并加链接（Lab 3 下一课为 Lab 4（第二期），无链接）。
+- M2 Lab 2 §4 无回指 → Lab 3 §2.3 加“回头答 Lab 2 §4.1 第 1 问 / §4.3 第 2 问”，§3.3 末尾指向 Lab 2 §4.3 第 3 问。
+- M3 性能用例自动重试 → Lab 1 §6 失败速查表加一行（最多 3 次、有一次通过即通过、附 GPU 占用、`make run` 不重试）。
+- M4 Lab 3 两个 README 说通过时打印比值 → 改为 `make run` 才打印，`make grade` 通过时只显示带宽。
+- M5 Lab 2 “64 个哨兵与 Lab 1 相同” → 改为“原理同 Lab 0 §1.3，harness 是 256 KiB，这里只留 64 个元素”。
+- M6 Lab 0 暴露 `make verify` → 删去。
+- M7 README 示例命令只在 Lab 1 有效 → 改为 `CASE=<用例名>`，并注明 Lab 1 的例子。
+- M8 Lab 2/3 未提 profiler → Lab 2 §3.4 末尾加“Lab 1 §6 的工具照常可用”，说明 rocprofv3 trace 里 kernel 名（含模板参数，实测）。
+
+验证：四份讲义 + site 浅色/深色/390 px 宽无控制台错误、无横向溢出、跨页锚点全部存在；全部 § 交叉引用（535 处）复核；新增 static_assert 片段与 `--save-temps` 命令本机编译通过；改动后重跑 `make verify-all`：test_grade 通过，4 个 Lab 均 VERIFY OK（solutions 全过、mutant 全被抓、骨架不满分；改过的 Lab 1 a3、Lab 3 a3 骨架仍能编译且 0 分）。

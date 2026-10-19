@@ -3,6 +3,7 @@
 // 两遍结构（已给出）：
 //     in --(多 block，每个 block 出一个部分和)--> ws[0..blocks) --(1 个 block 汇总)--> out
 // block 之间没有 __syncthreads，最直接的做法是分成两次 kernel 启动（kernel 边界就是全局屏障，讲义 §4.1）。
+// __device__ 函数、模板 kernel（partial_sum_kernel<kShfl>）的写法见讲义 §2.2。
 // 判分：在 lab1-hip-basics/ 目录下运行 make grade A=a3；调试：make run A=a3 CASE=用例名
 #include <hip/hip_runtime.h>
 

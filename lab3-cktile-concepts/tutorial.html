@@ -506,6 +506,9 @@ static_assert(swizzled.calculate_offset(make_tuple(2, 5, 3)) == 5 * 16 + (2 ^ (5
 i=1:  20  16  28  24        i=5:  84  80  92  88
 i=2:  40  44  32  36        i=6: 104 108  96 100
 i=3:  60  56  52  48        i=7: 124 120 116 112</code></pre>
+<div class="callout note" data-title="16 字节访问时的 bank 模型：留到 Lab 4">
+  <p>本节（以及小部件 1.1）的 bank 分析沿用 <a href="../lab1-hip-basics/tutorial.html#s3-6">Lab 1 §3.6</a> 的模型：每个 lane 一次读写 4 字节（<code>ds_read_b32</code>），半个 wavefront（32 个 lane）一批。Lab 1 §3.6 末尾提醒过，一次读写 8/16 字节（<code>ds_read_b64</code>/<code>ds_read_b128</code>，§2.4 承诺向量长度 4 时就会生成 <code>ds_write_b128</code>）时，硬件按另一种方式把 lane 分批，冲突的判定也随之改变。上面“按 4 个一组 swizzle”只保证了一件事：每次 16 字节的向量访问不会被 swizzle 拆开、行首对齐不变；至于这种排法在 b128 访问下是否完全无冲突，要按 b128 的分批规则重新数，这一步放到 Lab 4（GEMM 的 LDS 读写大量使用 b128）再做。本 Lab 的作业只要求正确性和带宽阈值，用不到这条规则。</p>
+</div>
 <p>xor 只在长度是 2 的幂时才是“行内置换”：若 N = 6，j = 5、i = 2 时 5 ^ 2 = 7 ≥ 6，坐标会跑出这一行。下面的小部件把这一节所有的变换链画成偏移表，并按 bank 着色；选一行或一列，看它落在多少个不同的 bank 上。</p>
 <figure class="widget" data-widget="layout-explorer">
   <div class="widget-head"><b>layout explorer：上层坐标 → 偏移 → bank</b><span class="hint">选变换链与尺寸；点格子看换算过程</span></div>
@@ -611,7 +614,7 @@ thread 127: (30,28) (30,29) (30,30) (30,31) (31,28) (31,29) (31,30) (31,31)</cod
 <ol>
   <li>每个 X 维：H 各段之积 = tile 在这一维的长度（例子：2·8·2 = 32，8·4 = 32）。</li>
   <li>H 的每一段恰好被一个 P 或一个 Y 认领，不重不漏。</li>
-  <li>P0（warp）认领的段长之积 = block 里的 wavefront 数（2）；P1（lane）认领的段长之积 = 64（8·8）。</li>
+  <li>P0（warp）认领的段长之积 = block 里的 wavefront 数（2）；P1（lane）认领的段长之积 = 64（8·8，即 <code>get_warp_size()</code>，Lab 2 §3.2）。</li>
   <li>线程总数 × 每线程元素数（∏Y = 2·4）= tile 元素数（128·8 = 1024）。</li>
   <li>让一个 Y 认领 X1 的<em>最后</em>一段，它在内存里连续，才能向量化；惯例上放在 Y 的最后。</li>
 </ol>
@@ -644,6 +647,9 @@ thread 127: (30,28) (30,29) (30,30) (30,31) (31,28) (31,29) (31,30) (31,31)</cod
 
 <h3 id="s2-3"><span class="sec">§2.3</span><code>pad_tensor_view</code> 与二维边界</h3>
 <p><a href="../lab2-cktile-intro/tutorial.html#s3-1">Lab 2 §3.1</a> 讲过，naive 视图的越界保护只有一层：buffer 指令的硬件 range = 视图的元素空间大小（§1.2 的 <code>get_element_space_size()</code>），软件层的 is_valid 标志对 naive 视图恒为 true。一维时这就够了：越过末尾的访问一定越过 range。二维就不一样了——<strong>列越界不等于线性偏移越界</strong>。rows × cols 的行主序矩阵里，(r, c) 的偏移是 r·cols + c；c ≥ cols 时这个数照样可能小于 rows·cols，于是访问落到了<em>下一行</em>的开头。</p>
+<div class="callout note" data-title="回头答 Lab 2 §4.1 第 1 问">
+  <p>带行间距 ld（ld &gt; cols）时情况类似：range 是 §1.2 的元素空间大小 (rows − 1)·ld + cols，而不是 rows·cols；列方向小幅越界落在行间空位里，越界超过 ld − cols 才碰到下一行的数据，只有伸出最后一行末尾的部分才会被硬件屏蔽。这正是 <a href="../lab2-cktile-intro/tutorial.html#s4-1">Lab 2 §4.1</a> 第 1 问所说的“漏网”。读完本节的 pad 视图（它让 is_valid 标志真正起作用）后，也可以回头做 <a href="../lab2-cktile-intro/tutorial.html#s4-3">Lab 2 §4.3</a> 第 2 问（<code>oob_conditional_check</code> 为 false 时省掉了什么）。</p>
+</div>
 <figure class="diagram">
   <svg viewBox="0 0 640 196" role="img" aria-labelledby="fig22-t">
     <title id="fig22-t">33 乘 31 的矩阵上放一个 64 乘 64 的 tile：tile 第 0 行的第 31 到 63 列，线性偏移落在矩阵第 1 行和第 2 行</title>
@@ -1115,7 +1121,7 @@ CK_TILE_DEVICE auto block_tile_reduce(const InDistributedTensor_&amp; in_tensor,
                 // reduce
                 v_local = reduce_func(v_local, v_remote);
             }</code></pre>
-  <p>逐行读：只处理“lane（<code>idim_p_lane</code>，即最后一个 P）拥有的 R 段”；R 段长度必须是 2 的幂；<code>lid_over_rid_derivative</code> 是“R 坐标加 1 时 lane id 加几”——例子里 R 段是 lane id 最低的那一段（长度 16，即 lane id 的低 4 位），所以是 1；然后做 log₂(16) = 4 轮，每轮从 lane + delta 拉一个值过来合并，delta 依次是 8、4、2、1。这和你在 Lab 1 a3 写的 <code>for (d = 32; d &gt; 0; d /= 2) v += __shfl_down(v, d);</code> 是同一个树形结构，只是 delta 按分布缩放、而且只在 16 个 lane 的范围内做。<code>warp_shuffle_down</code>（<code>core/arch/utility.hpp</code> 第 47–60 行）用的也正是 <code>__shfl_down</code> 背后的那条 <code>ds_bpermute_b32</code>，只是越界时行为不同：HIP 的 <code>__shfl_down</code> 在 lane + delta 超出 wavefront 时返回自己的值（<code>hip/amd_detail/amd_warp_functions.h</code> 第 375–381 行），CK 的版本直接把地址交给 <code>ds_bpermute</code>，按 64 回绕。本例中这些回绕来的值不会被用到（只有每组第一个 lane 的结果被保留），所以不影响结果。</p>
+  <p>逐行读：只处理“lane（<code>idim_p_lane</code>，即最后一个 P）拥有的 R 段”；R 段长度必须是 2 的幂；<code>lid_over_rid_derivative</code> 是“R 坐标加 1 时 lane id 加几”——例子里 R 段是 lane id 最低的那一段（长度 16，即 lane id 的低 4 位），所以是 1；然后做 log₂(16) = 4 轮，每轮从 lane + delta 拉一个值过来合并，delta 依次是 8、4、2、1。这和你在 Lab 1 a3 写的 <code>wave_reduce</code> 是同一个树形结构（那里的 delta 从 <code>warpSize</code> 推出、覆盖整个 64 lane 的 wavefront），只是这里的 delta 由分布在编译期决定、而且只在 16 个 lane 的范围内做。<code>warp_shuffle_down</code>（<code>core/arch/utility.hpp</code> 第 47–60 行）用的也正是 <code>__shfl_down</code> 背后的那条 <code>ds_bpermute_b32</code>，只是越界时行为不同：HIP 的 <code>__shfl_down</code> 在 lane + delta 超出 wavefront 时返回自己的值（<code>hip/amd_detail/amd_warp_functions.h</code> 第 375–381 行），CK 的版本直接把地址交给 <code>ds_bpermute</code>，按 64 回绕。本例中这些回绕来的值不会被用到（只有每组第一个 lane 的结果被保留），所以不影响结果。</p>
 </div>
 <p>树形归约之后，只有每组的第一个 lane 持有完整结果。默认参数 <code>WithBroadcast = true</code> 时，函数接着做第二遍（第 85–121 行）：用 <code>warp_shuffle_up</code> 把结果反向“广播”回同组的其他 lane，于是 16 个 lane 最终持有同一个值——正好满足 R 的含义。</p>
 <p>同一个文件第 132 行起还有一个 <code>block_tile_reduce_xor_sync</code>：每轮让 lane 与 <code>lane ^ (derivative &lt;&lt; istage)</code> 交换（第 170–171 行；istage 从 0 递增，伙伴依次是 lane^1、^2、^4、^8），这是“蝶形”归约，做完 log₂ 轮所有 lane 都已经是完整结果，不需要广播。本机对比用本节片段搭成的测试 kernel（每个线程 2 个累加值）的汇编：默认的 sync 每个累加值用 8 条 <code>ds_bpermute_b32</code>（4 轮归约 + 4 轮广播），共 16 条；xor 版本 8 条，结果相同。</p>
@@ -1413,7 +1419,7 @@ __global__ void scale_strip_kernel(const float* x, float* y, float alpha, index_
 <div class="callout warn" data-title="这个分布只适合逐元素运算">
   <p>逐元素运算不在乎“谁和谁在一起”，所以这里怎么分都行：一行 64·kVec 列横跨两个 wavefront，行方向没有 Y。把它原样拿去做行归约，两条 §3.1–§3.2 的约束都会被违反——行方向没有 Y，<code>block_tile_reduce</code> 编译失败；就算补上 Y，同一行的部分和分在两个 wavefront 里，<code>block_tile_reduce_sync</code> 也合不起来。a3 的分布要你从约束出发自己设计。</p>
 </div>
-<p>把这个循环和 §3.1 中“累加进已有累加器”的 <code>block_tile_reduce</code> 重载放在一起想：如果每一步不是“算完就写”，而是把这一块归约进同一个累加器，循环结束后再做一次 sync、写一次结果——这就是沿长行做归约的骨架。只是分布、tile 形状和 block 大小都得换成满足 §3.1–§3.2 约束的那一套（见上面的 warn 框），这一步就是 a3 的设计。</p>
+<p>把这个循环和 §3.1 中“累加进已有累加器”的 <code>block_tile_reduce</code> 重载放在一起想：如果每一步不是“算完就写”，而是把这一块归约进同一个累加器，循环结束后再做一次 sync、写一次结果——这就是沿长行做归约的骨架。只是分布、tile 形状和 block 大小都得换成满足 §3.1–§3.2 约束的那一套（见上面的 warn 框），这一步就是 a3 的设计。像这样在循环里反复从同一个（移动中的）窗口 load，正是 <a href="../lab2-cktile-intro/tutorial.html#s4-3">Lab 2 §4.3</a> 第 3 问（<code>load_tile(dst_tile, window)</code> 重载）的使用场景，现在可以回头答它。</p>
 
 <h3 id="s3-4"><span class="sec">§3.4</span>guaranteed vector length 与对齐</h3>
 <p><code>make_naive_tensor_view</code>（和 <code>make_naive_tensor_descriptor</code>）的最后两个参数，Lab 2 称作“保证的最内维向量长度”和“保证的最内维 stride”。它们是你对 CK-Tile 许下的<strong>承诺</strong>：“沿最内维，从 V 的倍数开始的每 V 个元素，可以当成一个向量一次访问”。CK-Tile 不检查这个承诺，只是照着它生成指令：</p>
@@ -1507,7 +1513,7 @@ void launch_scale_strip(const float* x, float* y, float alpha, int rows, int col
 </div>
 
 <footer class="doc-footer">
-  <p><a href="../site/index.html">返回课程目录</a> · 上一课：<a href="../lab2-cktile-intro/tutorial.html">Lab 2 讲义</a></p>
+  <p><a href="../site/index.html">返回课程目录</a> · 上一课：<a href="../lab2-cktile-intro/tutorial.html">Lab 2 C++ 速成 + CK-Tile 入门</a> · 下一课：Lab 4 MFMA 与 tiled GEMM（第二期）</p>
 </footer>
 
 </main>

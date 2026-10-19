@@ -6,7 +6,7 @@
 
 **怎么学**：每个 Lab 有一份讲义（`tutorial.html`，带图示和交互小部件）和几个作业（Assignment）。作业只用此前讲义讲过的概念；每个作业都能自动判分——正确性和性能都算分。
 
-目标硬件（本机实测）：gfx942，80 CU，wavefront 64，每个 workgroup 最多 1024 线程、LDS 64 KiB；ROCm 7.2（`/opt/rocm`）。
+目标硬件（本机实测）：gfx942，80 CU，wavefront 64，每个 block（AMD 文档叫 workgroup）最多 1024 线程、LDS 64 KiB；ROCm 7.2（`/opt/rocm`）。
 
 ## 路线图
 
@@ -20,7 +20,7 @@
 | 5 GEMM 进阶 | 软件流水线、double buffer、epilogue 融合、Grouped GEMM | 带性能门槛 | 第二期 |
 | 6 多卡通信基础 | P2P / IPC、RCCL、手写 all-to-all（device 端 flag 同步） | | 第三期 |
 | 7 通算融合 | Grouped GEMM + all-to-all 融合（MoE 场景） | | 第三期 |
-| 8 Mega kernel 技术 | persistent kernel、device 端任务队列与调度、跨 CU 同步、指令级流水 | | 第四期 |
+| 8 Mega kernel 技术 | persistent kernel、device 端任务队列与调度、跨 block 同步、指令级流水 | | 第四期 |
 
 ## 快速开始
 
@@ -34,22 +34,23 @@ make grade            # 编译并判分本 Lab 的全部作业（原样提交的
 ## 每个 Lab 的学习流程
 
 1. **读讲义**：打开 `labN-*/tutorial.html`。每节末尾标注了“对应哪个作业的哪个 TODO”，读到那里就可以去做。
-2. **做作业**：在 `aK-*/` 里编辑唯一的 `.hip` 文件，补全 `// TODO(aK-n): …（讲义 §x.y）` 标记、写在 `// >>> 你的代码 <<<` 区域里。先读该作业的 `README.md`：任务、用例表、分级 Hints（Hint 1 给方向，Hint 2 给关键步骤，个别作业还有折叠的 Hint 3），卡住时按顺序看。
+2. **做作业**：在 `aK-*/` 里编辑唯一的 `.hip` 文件，补全 `// TODO(aK-n): …（讲义 §x.y）` 标记、写在 `// >>> 你的代码 <<<` 区域里。自主设计题（见下）需要在标记之外新增 kernel 或辅助函数，位置写在该题的 README 和骨架注释里。先读该作业的 `README.md`：任务、用例表、分级 Hints（Hint 1 给方向，Hint 2 给关键步骤，个别作业还有折叠的 Hint 3），卡住时按顺序看。
 3. **判分**：在 Lab 目录下运行
    ```bash
    make grade A=a2                     # 只判 a2；不加 A= 判整个 Lab
-   make run A=a2 CASE=lds_bandwidth    # 直接运行某个用例，打印详细信息（调试、printf、看性能数字）
+   make run A=a2 CASE=<用例名>         # 直接运行某个用例，打印详细信息（调试、printf、看性能数字）；
+                                       # 用例名见 make grade 的输出或作业 README 的用例表，例如 Lab 1 的 make run A=a2 CASE=lds_bandwidth
    ```
 4. **写书面问题**：答在 Lab 目录的 `answers.md` 里（不计分，但都是后面几课要用的直觉；很多题要你用 `make run` 做实验）。
 
-难度随课程推进逐步过渡：先“填函数体”（签名和 launch 配置给定），再“补全设计”（自己定 block 尺寸、LDS 布局、循环结构），每个 Lab 的收尾作业是“自主设计”（只给接口和测试）。
+难度随课程推进逐步过渡：先“填函数体”（签名和 launch 配置给定），再“补全设计”（自己定 block 尺寸、LDS 布局、循环结构），最后“自主设计”（只给接口和测试）。第一期各 Lab 的情况：Lab 0（环境）两题都是填空；Lab 1 从填函数体（a1、a3）、补全设计（a2 的 LDS 分块转置）走到自主设计（a4 的 LDS 分块 GEMM）；Lab 2 换了新框架，回到填空（a1 的 6 个 C++ 小函数、a2 的 4 个 TODO，常量和 grid 已给出）；Lab 3 从填空（a1）、补全设计（a2）走到自主设计（a3 行归约）。
 
 ## 判分是怎么做的
 
 - 每个作业的 `test.cpp` 通过 `#include` 引入你的 `.hip` 文件；每个用例在独立进程里运行，单个用例超时 60 s，单次显存占用不超过 2 GB。
 - **正确性用例**：多种尺寸（含 1、不整除、较大）、多个随机种子，容差按数据类型定；输出两侧有哨兵区（guard buffer），越界写会被发现；还会检查输入没有被修改。
 - **性能用例**：同样计入分数。访存类作业以“同一进程里实测的 `hipMemcpyDeviceToDevice` 拷贝带宽”为基准，阈值是相对这个基准的比例，所以机器上有别人在跑时也相对公平；Lab 1 a4（GEMM）是绝对的 GFLOPS 阈值。性能用例失败会自动重试，最多跑 3 次取最好。阈值都经过校准：参考答案和“慢的错误实现”之间各留至少 1.5 倍余量，合理的简单设计能稳定通过。
-- **“判分覆盖不到的 bug”**：多数作业的 README 有这一节，列出测试原理上抓不到的问题（数据竞争、未初始化变量、向量长度承诺过度等）。“全部 PASS”不等于没有这些问题，请对照讲义自己排除。
+- **“判分覆盖不到的 bug”**：多数作业的 README 有这一节，列出测试原理上抓不到的问题（数据竞争、未初始化变量、向量长度承诺过度等）。“全部 OK”不等于没有这些问题，请对照讲义自己排除。
 
 ## 关于 `solutions/`
 

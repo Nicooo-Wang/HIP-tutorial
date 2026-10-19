@@ -14,7 +14,7 @@
   <div>
     <h1>从 HIP 到 Mega Kernel</h1>
     <p class="lede">一门在 MI308X 上动手写 GPU kernel 的自学课程。从线程层级和访存讲起，经过 CK-Tile 与 MFMA tiled GEMM，再到多卡通信、通算融合，最后落到 mega kernel 技术。每个概念先在讲义里讲清楚，再用一个能自动判分的作业练一遍。</p>
-    <p class="hw">目标硬件：AMD MI308X（gfx942，80 CU，wavefront 64，LDS 64 KiB / workgroup），ROCm 7.2</p>
+    <p class="hw">目标硬件：AMD MI308X（gfx942，80 CU，wavefront 64，LDS 64 KiB / block），ROCm 7.2</p>
   </div>
   <svg class="wave-art" viewBox="-1 -1 89 102" role="img" aria-label="一个 wavefront 的 64 个 lane">
       <rect x="0" y="0" width="9" height="9" rx="1.5" class="on"/>
@@ -163,7 +163,7 @@
       <span class="lab-num" aria-hidden="true">8</span>
       <div class="lab-card">
         <p class="lab-title">Mega kernel 技术<span class="tag-soon">即将推出</span></p>
-        <p class="lab-topics">用一个常驻 kernel 调度多个阶段：任务队列、跨 workgroup 同步与依赖管理。</p>
+        <p class="lab-topics">用一个常驻 kernel 调度多个阶段：任务队列、跨 block 同步与依赖管理。</p>
       </div>
     </li>
   </ol>

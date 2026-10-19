@@ -165,7 +165,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
   <p>① <strong>指令和操作数要合适。</strong>每 SIMD 每周期 32 个 FMA 有两条路可达：编译器生成 <code>v_pk_fma_f32</code>（一条指令同时做两个 fp32 FMA）；或者普通的 <code>v_fma_f32</code> 由同一 SIMD 上的两个 wave 在同一周期<em>双发射</em>——这要求每个 SIMD 至少驻留 2 个 wave，并且指令的操作数不能来自标量寄存器（SGPR，例如直接拿 kernel 参数 <code>alpha</code> 当乘数）。本机微基准：操作数全在向量寄存器里的 <code>v_fma_f32</code> 约 26.5 TFLOPS，<code>v_pk_fma_f32</code> 约 28.3 TFLOPS；读 SGPR 操作数的 <code>v_fma_f32</code> 只有约 14 TFLOPS，每个 SIMD 只驻留 1 个 wave 时也只有约一半速率。GEMM 内层乘加的操作数来自 LDS 和寄存器，不打包也能接近全速。② <strong>跑不到最高频率。</strong>本机跑 kernel 时核心频率实测约 1.39–1.42 GHz（<code>rocm-smi --showclocks</code>；与负载大小基本无关，只占 8 个 CU 时也是约 1.42 GHz），所以实测 FMA 吞吐约 28 TFLOPS ≈ 80 × 256 × 1.39 GHz。和理论峰值比较时，记住这两个折扣。</p>
 </div>
 <div class="callout note" data-title="为什么性能用例以“拷贝带宽”为基准">
-  <p>理论 5.3 TB/s 在实践中摸不到：本机实测，显存到显存拷贝（<code>hipMemcpy</code> D2D，读 + 写，由 ROCm 运行时自己的 kernel 完成）约 2.0–2.2 TB/s，一个简单的只读 kernel 约 3–3.6 TB/s（随尺寸、时刻波动），都远低于理论值。Lab 1 的访存类性能用例（a2、a3）以拷贝带宽为“尺子”：先在<em>同一进程</em>里测一次 D2D 拷贝带宽，再要求你的 kernel 达到它的某个比例。机器被别人占用时两者一起变慢，比例仍然公平。注意这只是一种归一化，拷贝带宽<strong>不是上限</strong>：以读为主的 kernel（例如 a3 的归约）完全可以超过它。</p>
+  <p>理论 5.3 TB/s 在实践中摸不到：本机实测，显存到显存拷贝（<code>hipMemcpy</code> D2D，读 + 写，由 ROCm 运行时自己的 kernel 完成）约 2.0–2.2 TB/s，一个简单的只读 kernel 约 3–3.6 TB/s（随尺寸、时刻波动），都远低于理论值。Lab 1 的访存类性能用例（a2、a3）以拷贝带宽为“尺子”：先在<em>同一进程</em>里测一次 D2D 拷贝带宽，再要求你的 kernel 达到它的某个比例。本课程把“你的带宽 ÷ 同进程实测拷贝带宽”叫作<strong>比值</strong>：Lab 1 的阈值和参考数字写成百分比（14% 就是比值 0.14），Lab 2 起判分输出和 README 直接写比值。机器被别人占用时两者一起变慢，比值仍然公平。注意这只是一种归一化，拷贝带宽<strong>不是上限</strong>：以读为主的 kernel（例如 a3 的归约）完全可以超过它。</p>
 </div>
 
 <h3 id="s1-4"><span class="sec">§1.4</span>两块天花板：带宽与算力</h3>
@@ -239,12 +239,13 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
 <p>由此得到两条直觉：① 同一个 wavefront 内的 lane 最好走同一条路径；② 分支只在“wavefront 内部意见不一致”时才有代价。这两条在 §4.2 讲归约时会用到。</p>
 
 <h3 id="s2-2"><span class="sec">§2.2</span>kernel 与 launch</h3>
-<p>启动语法在 <a href="../lab0-env/tutorial.html#s3-1">Lab 0 §3.1</a> 讲过：<code>kernel&lt;&lt;&lt;grid, block, LDS 字节数, stream&gt;&gt;&gt;(参数…)</code>。补充四点本课要用的细节：</p>
+<p>启动语法在 <a href="../lab0-env/tutorial.html#s3-1">Lab 0 §3.1</a> 讲过：<code>kernel&lt;&lt;&lt;grid, block, LDS 字节数, stream&gt;&gt;&gt;(参数…)</code>。补充五点本课要用的细节：</p>
 <ul>
   <li><strong>参数按值传进 kernel。</strong>指针参数传的是地址值，<code>float alpha</code> 这样的标量直接拷进 kernel，每个线程都能读。指针必须指向 GPU 能访问的内存（通常就是显存；Assignment 里的指针都已经是 <code>hipMalloc</code> 来的）。</li>
   <li><strong>grid 和 block 可以是二维、三维。</strong>写成 <code>dim3 block(64, 4)</code>，kernel 里用 <code>threadIdx.y</code>、<code>blockIdx.y</code>、<code>blockDim.y</code>、<code>gridDim.y</code>。§3.2 的转置会用到。一维时直接写整数，等价于 <code>dim3(n, 1, 1)</code>。</li>
   <li><strong><code>gridDim</code></strong> 是 kernel 里能读到的“grid 有多少个 block”，与 <code>blockDim</code> 对称。§2.5 要用它。</li>
   <li><strong>启动是异步的</strong>（<a href="../lab0-env/tutorial.html#s4-2">Lab 0 §4.2</a>）。Assignment 的启动函数收到一个 <code>stream</code> 参数，原样传给启动语句即可；测试会负责同步和检查错误。</li>
+  <li><strong><code>__device__</code> 函数与模板 kernel。</strong><code>__global__</code> 函数是从主机启动的 kernel，返回类型必须是 <code>void</code>；<code>__device__</code> 修饰的是只能在 GPU 上、被 kernel（或别的 <code>__device__</code> 函数）调用的普通函数，可以有返回值，例如 <code>__device__ float wave_reduce(float v)</code>。kernel 也可以是模板，启动时把模板参数写在名字后面：<code>partial_sum_kernel&lt;true&gt;&lt;&lt;&lt;grid, block, 0, stream&gt;&gt;&gt;(…)</code>，编译器为每个用到的模板参数各生成一份 kernel。a3 的骨架两种写法都用到了。</li>
 </ul>
 
 <h3 id="s2-3"><span class="sec">§2.3</span>全局下标与边界检查</h3>
@@ -538,7 +539,7 @@ __global__ void reverse_each_block(const float* in, float* out) {
 </table>
 </div>
 <p>耗时与“32 个 bank、每半个 wavefront 一批”的模型吻合（倍数略低于预测，是因为循环里还有别的开销）。特别注意 stride 64 与 32 同样慢、而不是更慢——说明 bank 数是 32 而不是 64。CUDA 资料里“32 个 bank”的结论在这里恰好也成立，但背后的 wavefront 是 64 宽，别把两件事混在一起。</p>
-<p>“两半各一批”也有微基准直接验证：让前 32 个 lane 都读 bank 0、后 32 个 lane 都读 bank 1，耗时与 64 个 lane 全读 bank 0 一样（约 12 倍）。如果 64 个 lane 是一起处理的，前一种情况应该只慢约 6 倍。这条规则针对每 lane 4 字节的读；用 <code>float2</code>/<code>float4</code> 一次读 8/16 字节（<code>ds_read_b64</code>/<code>ds_read_b128</code>）时 lane 的分组方式不同，以后用到时再查（ROCm Blog《Avoiding LDS Bank Conflicts on AMD GPUs Using CK-Tile》）。</p>
+<p>“两半各一批”也有微基准直接验证：让前 32 个 lane 都读 bank 0、后 32 个 lane 都读 bank 1，耗时与 64 个 lane 全读 bank 0 一样（约 12 倍）。如果 64 个 lane 是一起处理的，前一种情况应该只慢约 6 倍。这条规则针对每 lane 4 字节的读；用 <code>float2</code>/<code>float4</code> 一次读 8/16 字节（<code>ds_read_b64</code>/<code>ds_read_b128</code>）时 lane 的分组方式不同。Lab 3 §1.6 会再提到这一点，具体的分组规则留到 Lab 4（GEMM 的 LDS 读写大量使用 <code>ds_read_b128</code>）再讲（参考 ROCm Blog《Avoiding LDS Bank Conflicts on AMD GPUs Using CK-Tile》）。</p>
 
 <h3 id="s3-7"><span class="sec">§3.7</span>用带宽衡量 kernel、读懂 <code>lds_bandwidth</code> 用例</h3>
 <p>访存密集的 kernel 用<strong>有效带宽</strong>衡量：kernel 逻辑上必须读写的字节数 ÷ 耗时。转置读 rows × cols 个 float、写同样多：</p>
@@ -733,6 +734,9 @@ float __shfl_down(float var, unsigned int lane_delta, int width = warpSize);</co
   <p>2<sup>24</sup> = 16777216 往上，相邻两个 fp32 的间距变成 2。此时 16777216 + 1 的精确结果 16777217 不可表示，要舍入到最近的可表示数（平局时取尾数为偶数的那个）。顺着这个思路，你能推出“单线程从 0 开始对 2<sup>25</sup> 个 1 顺序累加”的结果吗？（a3 书面问题 2。）分块求和的每个部分和都很小，这个问题要轻得多——这也是并行归约在精度上的一个附带好处。</p>
 </div>
 <p>用例 <code>repeatable_output</code> 则要求连续两次调用结果<strong>完全相同</strong>。骨架的两遍结构里，每个 block 的线程负责哪些元素、按什么顺序合并都是固定的，结果自然可重复。如果改用原子加（<code>atomicAdd</code>）把各 block 的部分和加到同一个地址，block 完成的先后每次不同，浮点结果就可能每次差一点——这是以后写跨 block 归约时要权衡的。</p>
+<div class="callout note" data-title="atomicAdd 的最小说明（a3 书面问题 4 用）">
+  <p><code>float atomicAdd(float* addr, float val);</code> 在设备代码里把 <code>val</code> 加到 <code>*addr</code> 上，“读—加—写”三步作为一个不可分割的整体完成，<strong>返回加之前的旧值</strong>。多个线程（可以来自不同 block）对同一地址做 atomicAdd 时，硬件把它们一个接一个地执行，所以不会丢失任何一次加法，但顺序不确定；同一地址上的原子操作越多，串行得越久。<code>int</code>、<code>unsigned</code> 等类型也有同名重载。它是后面 Lab 里跨 block 同步（计数器、标志位）的基本工具，本 Lab 的作业不需要用它。</p>
+</div>
 
 <div class="assignment-card" data-assign="a3" data-lab="lab1-hip-basics" data-path="lab1-hip-basics/a3-reduction/reduction.hip" data-title="归约：LDS 树形 → wavefront shuffle">
   <p>两遍结构与启动函数已给出。你要填：grid-stride 累加（TODO a3-1，§4.1，复习 §2.5）、LDS 树形归约 <code>block_reduce_lds</code>（a3-2，§4.2）、wave 内 shuffle 归约 <code>wave_reduce</code>（a3-3，§4.3）、block 级 shuffle 归约 <code>block_reduce_shfl</code>（a3-4，§4.4）。</p>
@@ -907,7 +911,7 @@ remark:     VGPRs Spill: 0</code></pre>
   <p>和 a2、a3 不同，这里是绝对阈值：计算密集的 kernel 没有像“拷贝带宽”那样现成的同进程基准。机器繁忙时会偏慢，失败信息会附上当前 GPU 占用，先用 <code>rocm-smi</code> 确认再重跑。正确性的判定是逐元素误差界 <code>|C − ref| ≤ 1e-5 · Σ|a·b| + 1e-6</code>：它比随机输入下 fp32 的典型舍入误差宽松得多，对任何合理的求和顺序都成立，K 方向怎么分段都行。</p>
 </div>
 <div class="callout warn" data-title="判分抓不到的两种 bug">
-  <p>有两类错误在本机上几乎不会让测试失败，只能靠你自己推理排除：① <strong>漏掉屏障 ②</strong>（§5.3 的读后写）。实测把它删掉的分块 GEMM 在所有用例上反复运行都“碰巧”算对，但它仍然是数据竞争，换个尺寸、换个负载、换个编译器版本就可能出错。② <strong>累加器没有初始化</strong>：<code>float acc[TM][TN];</code> 不写 <code>= {}</code> 是未定义行为，编译器这次恰好当成 0，下次未必。“全部 PASS”不能证明没有这两个问题——写完后对照 §5.3 逐条检查。</p>
+  <p>有两类错误在本机上几乎不会让测试失败，只能靠你自己推理排除：① <strong>漏掉屏障 ②</strong>（§5.3 的读后写）。实测把它删掉的分块 GEMM 在所有用例上反复运行都“碰巧”算对，但它仍然是数据竞争，换个尺寸、换个负载、换个编译器版本就可能出错。② <strong>累加器没有初始化</strong>：<code>float acc[TM][TN];</code> 不写 <code>= {}</code> 是未定义行为，编译器这次恰好当成 0，下次未必。“全部 OK”不能证明没有这两个问题——写完后对照 §5.3 逐条检查。</p>
 </div>
 
 <h3 id="s5-5"><span class="sec">§5.5</span>展望：MFMA（Lab 4）</h3>
@@ -959,13 +963,14 @@ rocprofv3 --kernel-trace --stats --output-format csv -d prof -o a3 -- ./build/ru
     <tr><th>结果偶尔错、重跑又对</th><td>数据竞争</td><td>每次读 LDS 前，写它的线程是否一定已写完（§3.5）；屏障 ②（§5.3）</td></tr>
     <tr><th>超时（&gt; 60 s）</th><td>死循环或挂起</td><td>屏障是否在 <code>if</code> 里（§3.5）；循环变量是否在前进</td></tr>
     <tr><th>结果正确但性能 FAIL</th><td>访存不合并、并行度不够、bank conflict、复用不够</td><td>§3.1 的口诀；block 数（§4.1）；padding（§3.6）；GEMM 的数据复用（§5.2）与寄存器分块（§5.4）；先用 rocm-smi 确认卡是空闲的</td></tr>
+    <tr><th>性能 FAIL 后附“已重试 3 次（当前 GPU … 占用：计算 x%，显存 y%）”</th><td><code>make grade</code> 对失败的性能用例会自动重跑，一共最多跑 3 次，有一次通过就算通过；3 次都没过才判 FAIL（显示最好的一次），并附上所用 GPU 的占用</td><td>占用明显不为 0 时，可能是别人在用这张卡：用 <code>rocm-smi</code> 换一张空闲的卡（<a href="../lab0-env/tutorial.html#s6-2">Lab 0 §6.2</a>）再判；占用接近 0 仍然 FAIL，就是代码本身不够快，按上一行排查。<code>make run</code> 不重试</td></tr>
     <tr><th>性能不够（尤其 a4）</th><td>寄存器溢出到 scratch：累加器数组没留在寄存器里</td><td>编译时加 <code>-Rpass-analysis=kernel-resource-usage</code>，看 <code>ScratchSize</code> 与 <code>VGPRs Spill</code> 是否为 0；循环边界是否为编译期常量、是否完全展开（§5.4）</td></tr>
   </tbody>
 </table>
 </div>
 
 <footer class="doc-footer">
-  <p><a href="../site/index.html">返回课程目录</a> · 上一课：<a href="../lab0-env/tutorial.html">Lab 0 环境与工具</a> · 下一课：Lab 2 C++ 速成 + CK-Tile 入门</p>
+  <p><a href="../site/index.html">返回课程目录</a> · 上一课：<a href="../lab0-env/tutorial.html">Lab 0 环境与工具</a> · 下一课：<a href="../lab2-cktile-intro/tutorial.html">Lab 2 C++ 速成 + CK-Tile 入门</a></p>
 </footer>
 
 </main>

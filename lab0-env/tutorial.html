@@ -135,12 +135,13 @@ Score: 0/6</code></pre>
   </svg>
   <figcaption><b>图 1.2</b>越界写往往<em>不会</em>让程序崩溃——它悄悄改写了相邻的数据。数值看起来全对，程序也可能是错的；哨兵区就是为了抓住这类错误。</figcaption>
 </figure>
-<p>另外两种失败信息：<strong>“超时（&gt;60 s）”</strong>通常是死循环或挂起；<strong>“进程崩溃（退出码 …）”</strong>后面会附上程序最后输出的几行，一般能看到 HIP 报出的错误原因（§4 会讲怎么看）。</p>
+<p>另外三种失败信息：<strong>“超时（&gt;60 s）”</strong>通常是死循环或挂起；<strong>“进程崩溃（退出码 …）”</strong>后面会附上程序最后输出的几行，一般能看到 HIP 报出的错误原因（§4 会讲怎么看）；<strong>“a1-hello: 编译失败（0 分）”</strong>后面紧跟 hipcc 的完整报错——整道题一个用例都不会运行，所以是 0 分。报错可能很长（后面用到 CK-Tile 模板时尤其如此），从<em>第一条</em> <code>error:</code> 开始读，后面的错误常常是它连带出来的。</p>
 
 <h3 id="s1-4"><span class="sec">§1.4</span>用 make run 调试</h3>
 <p><code>make grade</code> 把每个用例放在独立进程里跑、只汇总结论。想看程序自己的输出（比如你加的 <code>printf</code>）时，用 <code>make run</code>：</p>
 <pre><code class="language-bash">make run A=a1                      # 编译并直接运行全部用例，输出原样打印
 make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
+<p><code>make run</code> 每个用例打印一行 <code>OK</code> 或 <code>FAIL</code>（与 <code>make grade</code> 相同的用语，但不显示分值），最后一行是“通过 x/y”。它不会自动挑卡，没设置 <code>HIP_VISIBLE_DEVICES</code> 时程序默认用物理 0 号卡；想换卡就在命令前加上它（§6.2）。</p>
 <p>两个命令背后都是同一条编译命令（<code>STUDENT_SRC</code> 告诉 <code>test.cpp</code> 要包含哪个 <code>.hip</code> 文件；<code>common/lab.mk</code> 里实际写的是绝对路径，效果与下面相同）：</p>
 <pre><code class="language-bash">/opt/rocm/bin/hipcc -std=c++20 -O2 --offload-arch=gfx942 -I../common \
   -DSTUDENT_SRC="\"$PWD/a1-hello/hello.hip\"" a1-hello/test.cpp -o build/run-a1</code></pre>
@@ -285,7 +286,7 @@ make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
   <tbody>
     <tr><th>block</th><td>workgroup</td><td>thread block</td></tr>
     <tr><th>thread</th><td>work-item / lane</td><td>thread</td></tr>
-    <tr><th>wavefront</th><td>wavefront（wave）</td><td>warp（32 线程，而 AMD 是 64）</td></tr>
+    <tr><th>wavefront</th><td>wavefront（wave）</td><td>warp（32 线程，而 AMD 是 64）。注意：CK-Tile 源码沿用 warp 一词指 AMD 的 wavefront（gfx942 上 64 lane），如 <code>get_warp_id</code>、warp GEMM（Lab 2 起）</td></tr>
     <tr><th>LDS</th><td>LDS（Local Data Share）</td><td>shared memory</td></tr>
     <tr><th>CU</th><td>Compute Unit</td><td>SM</td></tr>
   </tbody>
@@ -517,7 +518,7 @@ HIP_CHECK(hipDeviceGetAttribute(&amp;mem_khz, hipDeviceAttributeMemoryClockRate,
 <p>这台机器是多人共享的。跑任何东西之前，先看一眼各张卡的占用：</p>
 <pre><code class="language-bash">rocm-smi --showuse --showmemuse     # 每张卡的计算占用（GPU use %）和显存占用（VRAM %）
 rocm-smi                            # 概览：温度、功耗、频率、占用</code></pre>
-<p>输出里的 <code>GPU[0]</code> … <code>GPU[7]</code> 就是 8 张卡。<code>make grade</code> 和 <code>make verify</code> 会自动挑“计算占用 + 显存占用”最小的那张卡，并在第一行打印出来。本机也装了更新的 <code>amd-smi</code>，例如 <code>amd-smi static -g 7</code> 可以看到第 7 张卡的缓存、显存等静态信息（§2.3 的表中有几项就来自它）。</p>
+<p>输出里的 <code>GPU[0]</code> … <code>GPU[7]</code> 就是 8 张卡。<code>make grade</code> 会自动挑“计算占用 + 显存占用”最小的那张卡，并在第一行打印出来。本机也装了更新的 <code>amd-smi</code>，例如 <code>amd-smi static -g 7</code> 可以看到第 7 张卡的缓存、显存等静态信息（§2.3 的表中有几项就来自它）。</p>
 
 <h3 id="s6-2"><span class="sec">§6.2</span>HIP_VISIBLE_DEVICES：选卡</h3>
 <p>环境变量 <code>HIP_VISIBLE_DEVICES</code> 决定程序能“看见”哪些 GPU。被选中的卡会<strong>重新从 0 编号</strong>：</p>
@@ -544,7 +545,7 @@ HIP_VISIBLE_DEVICES=6,7 ./some_program   # 程序里有两张卡：device 0 = �
 </div>
 
 <footer class="doc-footer">
-  <p><a href="../site/index.html">返回课程目录</a> · 下一课：Lab 1 HIP 基础</p>
+  <p><a href="../site/index.html">返回课程目录</a> · 下一课：<a href="../lab1-hip-basics/tutorial.html">Lab 1 HIP 基础</a></p>
 </footer>
 
 </main>
