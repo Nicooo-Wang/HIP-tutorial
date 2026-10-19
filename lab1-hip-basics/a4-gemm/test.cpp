@@ -38,16 +38,28 @@ TEST_CASE(tiled_all_shapes, 4) {
   for (auto& s : kShapes) { run(R, launch_gemm_tiled, "tiled", s[0], s[1], s[2], 4); if (!R.passed) return; }
 }
 
-// 校准（gfx942 空闲卡，5 次）：参考答案(32×32 tile, 32×8 block, 每线程 4 输出) ≈ 4636 GFLOPS（最小 4635.6），
-// naive(m3) ≈ 1149 GFLOPS（最大 1148.8），S/N≈4.0；几何平均 2307；按审查要求下调为 2000（对 naive 1.74×、16×16 变体 1.55×、参考答案 2.3× 余量）。
-// 合理自写变体：16×16 tile/16×16 block/每线程 1 输出 ≈ 3107；32×32 tile 无 padding ≈ 4553；均高于阈值。
-constexpr double kTiledGflops = 2000.0;
+// 阈值 = kTiledRatio × 同进程实测 fp32 FMA 吞吐（hk::fma_peak_gflops，纯寄存器 FMA 微基准）。
+// 学生 kernel 与微基准交替计时、各取最优：别人在同一张卡上跑东西时两者一起变慢，比值基本不变
+// （绝对阈值 2000 GFLOPS 在 3 个并发参考答案进程下会误判正确代码：参考答案从约 4630 掉到约 2440）。
+// 校准（墙钟，空闲 GPU 2、5 各 3 次；FMA 吞吐约 26.8 TFLOPS）：参考答案（32×32 tile、32×8 block、每线程 4 输出）
+// 0.1728–0.1730（约 4630 GFLOPS）；16×16 tile、每线程 1 输出的合理变体 0.1150–0.1152（约 3085）；naive（m3）0.0428–0.0429（约 1147）。
+// 取 0.065（空闲时约合 1740 GFLOPS）：naive 低于阈值 1.52×，16×16 变体高于阈值 1.77×，参考答案 2.66×。
+// 抗干扰实测（同卡另有 2–3 个进程）：循环跑本用例的副本——比值与空闲基本相同；持续不停发射参考 GEMM（重负载）——参考答案
+// 0.078–0.110（全过；绝对阈值 2000 时它只有约 1300 GFLOPS、全挂），16×16 变体 0.060–0.087（单次 21 中 17 过，判分器另有 3 次重试），
+// naive 0.035–0.052（全挂）。满载时 GEMM 掉速比 FMA 微基准多，比值偏低；用 16 KiB LDS 的基准则会反过来让 naive 越线，故不用。详见 docs/reviews/lab1.md。
+constexpr double kTiledRatio = 0.065;
 PERF_CASE(tiled_gflops, 4) {
   const int M = 2048, N = 2048, K = 2048;
   auto ha = hk::random_floats(size_t(M) * K, 5), hb = hk::random_floats(size_t(K) * N, 6);
   hk::GuardedBuffer<float> A(size_t(M) * K), B(size_t(K) * N), C(size_t(M) * N);
   A.upload(ha); B.upload(hb);
-  double ms = hk::time_best_ms([&] { launch_gemm_tiled(A.get(), B.get(), C.get(), M, N, K, nullptr); }, 2, 10);
+  auto launch = [&] { launch_gemm_tiled(A.get(), B.get(), C.get(), M, N, K, nullptr); };
+  hk::time_best_ms(launch, 2, 1);
+  double peak = hk::fma_peak_gflops(1, 1), ms = 1e30;
+  for (int r = 0; r < 10; ++r) {  // 交替：微基准、学生 kernel、微基准、学生 kernel……
+    peak = std::max(peak, hk::fma_peak_gflops(0, 1));
+    ms = std::min(ms, hk::time_best_ms(launch, 0, 1));
+  }
   R.metric = 2.0 * M * N * K / (ms * 1e-3) / 1e9;
   R.unit = "GFLOPS";
   if (!C.guards_intact(R)) return;
@@ -97,7 +109,8 @@ PERF_CASE(tiled_gflops, 4) {
           return;
         }
       }
-  if (R.metric < kTiledGflops)
-    hk::fail(R, "%.0f GFLOPS，低于目标 %.0f GFLOPS（若机器繁忙，用 rocm-smi 确认后重试）", R.metric, kTiledGflops);
+  if (R.metric < kTiledRatio * peak)
+    hk::fail(R, "%.0f GFLOPS，低于目标 %.0f GFLOPS（= %.1f%% × 本次实测 fp32 FMA 吞吐 %.0f GFLOPS）", R.metric,
+             kTiledRatio * peak, kTiledRatio * 100, peak);
 }
 HK_MAIN()

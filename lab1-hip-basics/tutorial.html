@@ -907,8 +907,8 @@ remark:     VGPRs Spill: 0</code></pre>
   <li>屏障仍然在所有 <code>if</code> 之外。</li>
 </ul>
 <div class="callout note" data-title="tiled_gflops 用例：多快算够">
-  <p>M = N = K = 2048，要求 2000 GFLOPS。空闲 MI308X 上实测：naive 约 1150；每线程 1 个输出的 16 × 16 分块约 3100；参考实现（一个简单设计，每线程算几个输出）约 4600。更好的设计可以高得多——例如认真做过寄存器分块的 GEMM 可达约 9500 GFLOPS，而这也只是实测 fp32 吞吐（约 28 TFLOPS）的三分之一左右。所以 4600 只是“过线有余”的参考，远不是上限；一个正确、访存合并、两个屏障都在的基础分块版本就能过线，寄存器分块是继续提速的主要手段。</p>
-  <p>和 a2、a3 不同，这里是绝对阈值：计算密集的 kernel 没有像“拷贝带宽”那样现成的同进程基准。机器繁忙时会偏慢，失败信息会附上当前 GPU 占用，先用 <code>rocm-smi</code> 确认再重跑。正确性的判定是逐元素误差界 <code>|C − ref| ≤ 1e-5 · Σ|a·b| + 1e-6</code>：它比随机输入下 fp32 的典型舍入误差宽松得多，对任何合理的求和顺序都成立，K 方向怎么分段都行。</p>
+  <p>M = N = K = 2048，要求达到同进程实测 fp32 FMA 吞吐的 6.5%（空闲时约 1740 GFLOPS）。空闲 MI308X 上实测：naive 约 1150；每线程 1 个输出的 16 × 16 分块约 3100；参考实现（一个简单设计，每线程算几个输出）约 4600。更好的设计可以高得多——例如认真做过寄存器分块的 GEMM 可达约 9500 GFLOPS，而这也只是实测 fp32 吞吐（约 28 TFLOPS）的三分之一左右。所以 4600 只是“过线有余”的参考，远不是上限；一个正确、访存合并、两个屏障都在的基础分块版本就能过线，寄存器分块是继续提速的主要手段。</p>
+  <p>和 a2、a3 用拷贝带宽作基准同一个思路，这里的基准是一个纯寄存器 FMA 微基准（§1 表格里那种，空闲时约 27 TFLOPS）：测试把你的 kernel 和它交替计时，要求 GFLOPS ≥ 6.5% × 微基准吞吐。别人在同一张卡上跑东西时两者一起变慢，比值大体不变；按这个比例，naive 约 4.3%，16 × 16 分块约 11.5%，参考实现约 17%。卡被长时间占满时仍可能偏低，失败信息会附上当前 GPU 占用，先用 <code>rocm-smi</code> 确认再换卡重跑。正确性的判定是逐元素误差界 <code>|C − ref| ≤ 1e-5 · Σ|a·b| + 1e-6</code>：它比随机输入下 fp32 的典型舍入误差宽松得多，对任何合理的求和顺序都成立，K 方向怎么分段都行。</p>
 </div>
 <div class="callout warn" data-title="判分抓不到的两种 bug">
   <p>有两类错误在本机上几乎不会让测试失败，只能靠你自己推理排除：① <strong>漏掉屏障 ②</strong>（§5.3 的读后写）。实测把它删掉的分块 GEMM 在所有用例上反复运行都“碰巧”算对，但它仍然是数据竞争，换个尺寸、换个负载、换个编译器版本就可能出错。② <strong>累加器没有初始化</strong>：<code>float acc[TM][TN];</code> 不写 <code>= {}</code> 是未定义行为，编译器这次恰好当成 0，下次未必。“全部 OK”不能证明没有这两个问题——写完后对照 §5.3 逐条检查。</p>
@@ -930,8 +930,8 @@ remark:     VGPRs Spill: 0</code></pre>
 <h4>只跑一个用例，看原始输出</h4>
 <pre><code class="language-bash">make run A=a2 CASE=lds_all_shapes      # 编译并只运行这一个用例
 make run A=a2                          # 运行全部用例（不经过判分脚本）
-HIP_VISIBLE_DEVICES=7 make run A=a3    # 指定物理 GPU（先用 rocm-smi 找一张空闲的）</code></pre>
-<p><code>make run</code> 编译出的程序在 <code>build/run-aK</code>，可以直接重复运行：<code>./build/run-a2 lds_square</code>。注意 <code>make run</code> 不会自动挑卡，机器忙时先用 <code>rocm-smi --showuse --showmemuse</code> 看一眼（<a href="../lab0-env/tutorial.html#s6-1">Lab 0 §6.1</a>）。</p>
+HIP_VISIBLE_DEVICES=7 make run A=a3    # 指定物理 GPU（不指定时和 make grade 一样自动挑最空闲的卡）</code></pre>
+<p><code>make run</code> 编译出的程序在 <code>build/run-aK</code>，可以直接重复运行：<code>./build/run-a2 lds_square</code>。<code>make run</code> 会像 <code>make grade</code> 一样自动挑最空闲的卡（第一行显示用的是哪张），但直接运行 <code>./build/run-aK</code> 不会挑卡、默认用物理 0 号卡，机器忙时先用 <code>rocm-smi --showuse --showmemuse</code> 看一眼（<a href="../lab0-env/tutorial.html#s6-1">Lab 0 §6.1</a>），再在命令前加 <code>HIP_VISIBLE_DEVICES=…</code>。</p>
 
 <h4>kernel 里的 printf</h4>
 <pre><code class="language-cpp">if (blockIdx.x == 0 &amp;&amp; threadIdx.x == 0)      // 只让一个线程打印，否则会刷屏

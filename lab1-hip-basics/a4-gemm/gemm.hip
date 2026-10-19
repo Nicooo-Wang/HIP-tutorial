@@ -19,7 +19,7 @@ void launch_gemm_naive(const float* A, const float* B, float* C, int M, int N, i
 // TODO(a4-2): 自主设计 LDS 分块 GEMM（讲义 §5.2–5.4）
 //   在这里（launch_gemm_tiled 之前）新增你自己的 __global__ kernel（个数、名字随你），再在下面的函数里启动它。
 //   你需要决定：tile 尺寸、block 形状、每个线程算几个输出、LDS 怎么摆放、K 方向怎么循环、边界怎么处理。
-//   可复用 a2 学到的 padding、a3 学到的同步。目标：tiled_gflops 用例的性能门槛（见 test.cpp 中 kTiledGflops）。
+//   可复用 a2 学到的 padding、a3 学到的同步。目标：tiled_gflops 用例的性能门槛（见 test.cpp 中 kTiledRatio：同进程实测 fp32 FMA 吞吐的 6.5%）。
 //   设计完成后，在 ../answers.md 的"设计说明"处用 3–5 句话写下你的选择和理由。
 void launch_gemm_tiled(const float* A, const float* B, float* C, int M, int N, int K, hipStream_t stream) {
   // >>> 你的代码 <<<
