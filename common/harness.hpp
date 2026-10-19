@@ -252,6 +252,35 @@ inline double copy_bandwidth_gbs(size_t bytes) {
   return 2.0 * bytes / (ms * 1e-3) / 1e9;
 }
 
+// ---------------- 同进程实测 fp32 FMA 吞吐：计算类性能用例的基准 ----------------
+// 纯寄存器 FMA 微基准：每线程 16 条独立的 fmaf 链，乘数、加数都在向量寄存器里（编译为 v_pk_fma_f32），
+// 不访存。1280 个 256 线程的 block 远多于整卡可驻留的 wave，约 1.6 ms（空闲 MI308X 约 27 TFLOPS）。
+// 计算类用例把学生 kernel 与它交替计时、取比值：别人在同一张卡上跑东西时两者一起变慢，比值基本不变。
+__global__ void hk_fma_peak_kernel(float* out, int iters, float seed) {
+  float x = seed + float(threadIdx.x) * 1e-7f;
+  float a = 1.0f - x * 1e-6f, b = x * 1e-7f;
+  float acc[16];
+#pragma unroll
+  for (int j = 0; j < 16; ++j) acc[j] = x + float(j);
+  for (int it = 0; it < iters; ++it) {
+#pragma unroll
+    for (int j = 0; j < 16; ++j) acc[j] = fmaf(acc[j], a, b);
+  }
+  float s = 0;
+#pragma unroll
+  for (int j = 0; j < 16; ++j) s += acc[j];
+  if (s == 1234.5f) out[0] = s;  // 几乎不会成立：只为防止编译器把计算删掉
+}
+
+// 运行 FMA 微基准，返回 best of iters 的 GFLOPS（warmup 次预热不计时）。
+inline double fma_peak_gflops(int warmup = 1, int iters = 3) {
+  static float* out = nullptr;
+  if (!out) HIP_CHECK(hipMalloc(&out, sizeof(float)));
+  constexpr int kBlocks = 1280, kThreads = 256, kIters = 4096;
+  double ms = time_best_ms([&] { hk_fma_peak_kernel<<<kBlocks, kThreads>>>(out, kIters, 1.0f); }, warmup, iters);
+  return 2.0 * 16 * kIters * double(kThreads) * kBlocks / (ms * 1e-3) / 1e9;
+}
+
 // ---------------- 进程入口 ----------------
 inline std::string json_escape(const std::string& s) {
   std::string o;

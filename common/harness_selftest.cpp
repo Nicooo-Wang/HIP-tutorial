@@ -167,6 +167,14 @@ PERF_CASE(copy_bandwidth_positive, 0) {
   if (!(R.metric > 100.0)) hk::fail(R, "拷贝带宽异常: %.1f", R.metric);
 }
 
+// FMA 微基准（计算类性能用例的基准）：空闲 MI308X 约 27 TFLOPS，同卡被别的 GEMM 持续占满时也有约 11 TFLOPS。
+// 下限只用来抓"kernel 没跑 / 被编译器删掉 / 计时出错"这类问题。
+PERF_CASE(fma_peak_positive, 0) {
+  R.metric = hk::fma_peak_gflops();
+  R.unit = "GFLOPS";
+  if (!(R.metric > 2000.0 && R.metric < 200000.0)) hk::fail(R, "FMA 吞吐异常: %.1f GFLOPS", R.metric);
+}
+
 TEST_CASE(json_escape_control_char, 1) {
   if (hk::json_escape("a\tb") != "a\\u0009b") hk::fail(R, "控制字符未转义为 \\u0009");
 }
