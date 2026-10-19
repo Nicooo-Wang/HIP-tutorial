@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """判分驱动：编译每个 Assignment，逐个用例在独立进程中运行，汇总分数。仅用标准库。"""
-import argparse, json, os, re, subprocess, sys
+import argparse, json, os, random, re, subprocess, sys
 from pathlib import Path
 
 COMMON = Path(__file__).resolve().parent
@@ -25,7 +25,9 @@ def discover(lab_dir):
 def student_src(assign_dir):
     hips = sorted(Path(assign_dir).glob("*.hip"))
     if len(hips) != 1:
-        raise RuntimeError(f"{assign_dir} 中应恰好有一个 .hip 文件，实际 {len(hips)} 个")
+        names = "、".join(h.name for h in hips) if hips else "无"
+        raise RuntimeError(f"{Path(assign_dir).name} 中应恰好有一个 .hip 文件，实际 {len(hips)} 个（{names}）；"
+                           f"请把多余的文件改名为别的后缀（如 .hip.bak）或移出该目录")
     return hips[0]
 
 
@@ -43,40 +45,104 @@ def build(assign_dir, src, out_bin):
     return p.returncode == 0, p.stdout + p.stderr
 
 
-def select_gpu():
-    if "HIP_VISIBLE_DEVICES" in os.environ:
-        return
+# 这些变量任意一个已设置，就说明用户（或集群调度器）已经指定了 GPU，判分器不再自动选卡。
+VISIBILITY_VARS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL")
+VRAM_FULL = 95.0      # 显存占用 ≥ 此百分比的卡不参与自动选择
+BUSY_WARN = 50.0      # 性能用例开始前，所用卡的计算占用超过此百分比就提醒
+
+
+def _rocm_smi(dev=None):
+    """返回 {卡号(str): (计算占用%, 显存占用%)}；rocm-smi 不可用或输出无法解析时返回 {}。"""
+    cmd = ["/opt/rocm/bin/rocm-smi", *(["-d", str(dev)] if dev is not None else []),
+           "--showuse", "--showmemuse", "--json"]
     try:
-        out = subprocess.run(["/opt/rocm/bin/rocm-smi", "--showuse", "--showmemuse", "--json"],
-                             timeout=30, **_RUN).stdout
+        out = subprocess.run(cmd, timeout=30, **_RUN).stdout
         data = json.loads(out[out.index("{"):])
     except Exception:
-        return
-    best = None
+        return {}
+    return parse_smi(data)
+
+
+def parse_smi(data):
+    res = {}
     for card, info in data.items():
         m = re.match(r"card(\d+)$", card)
         if not m:
             continue
         try:
-            load = float(info.get("GPU use (%)", 100)) + float(info.get("GPU Memory Allocated (VRAM%)", 100))
+            res[m.group(1)] = (float(info.get("GPU use (%)", 100)),
+                               float(info.get("GPU Memory Allocated (VRAM%)", 100)))
         except (ValueError, TypeError, AttributeError):
             continue
-        if best is None or load < best[0]:
-            best = (load, m.group(1))
-    if best:
-        os.environ["HIP_VISIBLE_DEVICES"] = best[1]
+    return res
+
+
+def pick_gpu(usage, rng=random):
+    """从 {卡号: (计算%, 显存%)} 中选最空闲的卡：跳过显存 ≥ VRAM_FULL 的卡，按 计算% + 显存% 取最小，并列时随机。"""
+    cands = [(u + v, card) for card, (u, v) in usage.items() if v < VRAM_FULL]
+    if not cands:
+        return None
+    best = min(load for load, _ in cands)
+    return rng.choice(sorted(card for load, card in cands if load == best))
+
+
+def select_gpu(env=None, usage=None, rng=random):
+    """自动选卡并写入 env["HIP_VISIBLE_DEVICES"]，返回一行中文说明（调用者负责打印）。"""
+    env = os.environ if env is None else env
+    given = [v for v in VISIBILITY_VARS if v in env]
+    if given:
+        return "使用 GPU: " + "，".join(f"{v}={env[v]}" for v in given) + "（已由环境变量指定，不自动选卡）"
+    usage = _rocm_smi() if usage is None else usage
+    card = pick_gpu(usage, rng)
+    if card is None:
+        if usage:
+            return f"使用 GPU: 默认（所有 GPU 显存占用都 ≥ {VRAM_FULL:.0f}%，未自动选卡）"
+        return "使用 GPU: 默认（rocm-smi 不可用，未自动选卡）"
+    env["HIP_VISIBLE_DEVICES"] = card
+    u, v = usage[card]
+    return f"使用 GPU: HIP_VISIBLE_DEVICES={card}（自动选择最空闲的卡：计算 {u:.0f}%，显存 {v:.0f}%）"
+
+
+def current_gpu(env=None):
+    """按可见性变量推算当前进程用的物理卡号（尽力而为；无法推算时返回 None）。"""
+    env = os.environ if env is None else env
+    try:
+        devs = None
+        rocr = env.get("ROCR_VISIBLE_DEVICES")
+        if rocr is not None:
+            devs = [int(x) for x in rocr.split(",")]
+        for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL"):
+            if var in env:
+                sel = [int(x) for x in env[var].split(",")]
+                devs = [devs[i] for i in sel] if devs is not None else sel
+                break
+        return str(devs[0]) if devs else "0"
+    except (ValueError, IndexError):
+        return None
+
+
+def gpu_usage_now():
+    dev = current_gpu()
+    if dev is None:
+        return None, None
+    return dev, _rocm_smi(dev).get(dev)
 
 
 def gpu_load_note():
     """性能用例失败时附上当前所用 GPU 的占用，帮助区分"代码慢"与"别人在用卡"。"""
-    dev = os.environ.get("HIP_VISIBLE_DEVICES", "0").split(",")[0]
-    try:
-        out = subprocess.run(["/opt/rocm/bin/rocm-smi", "-d", dev, "--showuse", "--showmemuse", "--json"],
-                             timeout=30, **_RUN).stdout
-        info = next(iter(json.loads(out[out.index("{"):]).values()))
-        return f"（当前 GPU {dev} 占用：计算 {info.get('GPU use (%)')}%，显存 {info.get('GPU Memory Allocated (VRAM%)')}%）"
-    except Exception:
+    dev, u = gpu_usage_now()
+    if u is None:
         return ""
+    return f"（当前 GPU {dev} 占用：计算 {u[0]:.0f}%，显存 {u[1]:.0f}%）"
+
+
+def busy_warning():
+    """性能用例开始前：所用卡计算占用 > BUSY_WARN 时返回一行提醒，否则返回空串。"""
+    dev, u = gpu_usage_now()
+    if u is None or u[0] <= BUSY_WARN:
+        return ""
+    return (f"  注意: GPU {dev} 当前计算占用 {u[0]:.0f}%（可能有别人在用），性能用例的结果可能偏低；"
+            f"可用 rocm-smi 查看后换卡（设置 HIP_VISIBLE_DEVICES）重跑")
 
 
 def _crash(p_rc, text):
@@ -129,7 +195,13 @@ def grade_assignment(assign_dir, src=None, quiet=False):
             return res
         if not quiet:
             print(f"{assign_dir.name}")
+        warned = False
         for c in cases:
+            if c["perf"] and not warned and not quiet:  # 第一个性能用例前检查一次所用卡是否正忙
+                warned = True
+                note = busy_warning()
+                if note:
+                    print(note)
             r = run_case(binary, c["name"])
             if c["perf"] and not r["passed"]:
                 for _ in range(PERF_TRIES - 1):
@@ -167,15 +239,29 @@ def list_cases_from_source(assign_dir):
 
 def main():
     ap = argparse.ArgumentParser(description="判分")
-    ap.add_argument("lab_dir")
+    ap.add_argument("lab_dir", nargs="?")
     ap.add_argument("--only", help="只判某个 Assignment，例如 a2")
+    ap.add_argument("--pick-gpu", action="store_true",
+                    help="只选卡：说明打印到 stderr；若自动选了卡，把卡号打印到 stdout（供 make run 使用）")
     args = ap.parse_args()
-    select_gpu()
-    print(f"使用 GPU: HIP_VISIBLE_DEVICES={os.environ.get('HIP_VISIBLE_DEVICES', '(默认)')}")
+    if args.pick_gpu:
+        env = dict(os.environ)
+        print(select_gpu(env), file=sys.stderr)
+        if "HIP_VISIBLE_DEVICES" in env and "HIP_VISIBLE_DEVICES" not in os.environ:
+            print(env["HIP_VISIBLE_DEVICES"])
+        return
+    if not args.lab_dir:
+        ap.error("缺少 lab_dir")
+    assigns = [a for a in discover(args.lab_dir) if not args.only or a.name.startswith(args.only + "-")]
+    for a in assigns:
+        try:
+            student_src(a)
+        except RuntimeError as e:
+            print(f"错误: {e}")
+            sys.exit(2)
+    print(select_gpu())
     total = mx = 0
-    for a in discover(args.lab_dir):
-        if args.only and not a.name.startswith(args.only + "-"):
-            continue
+    for a in assigns:
         r = grade_assignment(a)
         total += r["score"]
         mx += r["max"]

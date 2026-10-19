@@ -57,8 +57,12 @@ def main():
     ap.add_argument("lab_dir")
     ap.add_argument("--solutions-root", default=str(grade.REPO / "solutions"))
     args = ap.parse_args()
-    grade.select_gpu()
-    problems = verify_lab(args.lab_dir, args.solutions_root)
+    print(grade.select_gpu())
+    try:
+        problems = verify_lab(args.lab_dir, args.solutions_root)
+    except RuntimeError as e:  # 学生目录里 .hip 文件不是恰好一个
+        print(f"错误: {e}")
+        sys.exit(2)
     if problems:
         print("\nVERIFY FAILED:")
         for p in problems:
