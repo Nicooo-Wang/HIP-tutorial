@@ -49,7 +49,7 @@ make grade            # 编译并判分本 Lab 的全部作业（原样提交的
 
 - 每个作业的 `test.cpp` 通过 `#include` 引入你的 `.hip` 文件；每个用例在独立进程里运行，单个用例超时 60 s，单次显存占用不超过 2 GB。
 - **正确性用例**：多种尺寸（含 1、不整除、较大）、多个随机种子，容差按数据类型定；输出两侧有哨兵区（guard buffer），越界写会被发现；还会检查输入没有被修改。
-- **性能用例**：同样计入分数。访存类作业以“同一进程里实测的 `hipMemcpyDeviceToDevice` 拷贝带宽”为基准，阈值是相对这个基准的比例，所以机器上有别人在跑时也相对公平；Lab 1 a4（GEMM）是绝对的 GFLOPS 阈值。性能用例失败会自动重试，最多跑 3 次取最好。阈值都经过校准：参考答案和“慢的错误实现”之间各留至少 1.5 倍余量，合理的简单设计能稳定通过。
+- **性能用例**：同样计入分数。访存类作业以“同一进程里实测的 `hipMemcpyDeviceToDevice` 拷贝带宽”为基准，阈值是相对这个基准的比例，所以机器上有别人在跑时也相对公平；Lab 1 a4（GEMM）是计算类作业，基准换成同进程实测的 fp32 FMA 吞吐（纯寄存器微基准，与学生 kernel 交替计时）。性能用例失败会自动重试，最多跑 3 次取最好。阈值都经过校准：参考答案和“慢的错误实现”之间各留至少 1.5 倍余量，合理的简单设计能稳定通过。
 - **“判分覆盖不到的 bug”**：多数作业的 README 有这一节，列出测试原理上抓不到的问题（数据竞争、未初始化变量、向量长度承诺过度等）。“全部 OK”不等于没有这些问题，请对照讲义自己排除。
 
 ## 关于 `solutions/`
@@ -58,13 +58,13 @@ make grade            # 编译并判分本 Lab 的全部作业（原样提交的
 
 ## 共享 GPU 说明
 
-本机 8 张 MI308X 多人共享。`make grade` 会用 `rocm-smi` 自动挑最空闲的一张卡（输出第一行显示 `使用 GPU: HIP_VISIBLE_DEVICES=…`）；如果你已经设置了 `HIP_VISIBLE_DEVICES`，就尊重你的设置：
+本机 8 张 MI308X 多人共享。`make grade` 和 `make run` 会用 `rocm-smi` 自动挑最空闲的一张卡（跳过显存占用 ≥95% 的卡，并列时随机；输出第一行显示 `使用 GPU: HIP_VISIBLE_DEVICES=…`）；如果你已经设置了 `HIP_VISIBLE_DEVICES`（或 `ROCR_VISIBLE_DEVICES`、`CUDA_VISIBLE_DEVICES`、`GPU_DEVICE_ORDINAL`），就尊重你的设置，第一行会说明用的是哪个变量：
 
 ```bash
 HIP_VISIBLE_DEVICES=3 make grade A=a2
 ```
 
-`make run` 不自动选卡，需要时同样用 `HIP_VISIBLE_DEVICES` 指定。性能用例失败时先用 `rocm-smi` 看看那张卡是不是正忙，再重跑。
+直接运行 `build/run-aK` 不会自动选卡，需要时用 `HIP_VISIBLE_DEVICES` 指定。性能用例开始前，如果所用的卡计算占用超过 50%，`make grade` 会先打印一行提醒；性能用例失败时先用 `rocm-smi` 看看那张卡是不是正忙，再换卡重跑。
 
 ## 目录结构
 

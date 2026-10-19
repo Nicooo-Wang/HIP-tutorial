@@ -89,7 +89,7 @@ make grade A=a1     # 只判 a1</code></pre>
 
 <h3 id="s1-3"><span class="sec">§1.3</span>读懂判分输出</h3>
 <p>拿到仓库后先什么都不改，直接运行一次 <code>make grade A=a1</code>。你会看到类似这样的输出（这是骨架原样的真实结果）：</p>
-<pre><code class="language-text">使用 GPU: HIP_VISIBLE_DEVICES=7
+<pre><code class="language-text">使用 GPU: HIP_VISIBLE_DEVICES=7（自动选择最空闲的卡：计算 0%，显存 0%）
 a1-hello
   one_block_exact............................. FAIL (0/1)
     n=256: 256/256 个元素错误，首个错误在 [0]：期望 0，得到 -1
@@ -141,7 +141,7 @@ Score: 0/6</code></pre>
 <p><code>make grade</code> 把每个用例放在独立进程里跑、只汇总结论。想看程序自己的输出（比如你加的 <code>printf</code>）时，用 <code>make run</code>：</p>
 <pre><code class="language-bash">make run A=a1                      # 编译并直接运行全部用例，输出原样打印
 make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
-<p><code>make run</code> 每个用例打印一行 <code>OK</code> 或 <code>FAIL</code>（与 <code>make grade</code> 相同的用语，但不显示分值），最后一行是“通过 x/y”。它不会自动挑卡，没设置 <code>HIP_VISIBLE_DEVICES</code> 时程序默认用物理 0 号卡；想换卡就在命令前加上它（§6.2）。</p>
+<p><code>make run</code> 每个用例打印一行 <code>OK</code> 或 <code>FAIL</code>（与 <code>make grade</code> 相同的用语，但不显示分值），最后一行是“通过 x/y”。它和 <code>make grade</code> 一样会自动挑最空闲的卡（先打印一行“使用 GPU: …”）；想指定某张卡就在命令前加上 <code>HIP_VISIBLE_DEVICES=…</code>（§6.2）。直接运行编译出来的 <code>./build/run-aK</code> 则不会挑卡，没设置 <code>HIP_VISIBLE_DEVICES</code> 时默认用物理 0 号卡。</p>
 <p>两个命令背后都是同一条编译命令（<code>STUDENT_SRC</code> 告诉 <code>test.cpp</code> 要包含哪个 <code>.hip</code> 文件；<code>common/lab.mk</code> 里实际写的是绝对路径，效果与下面相同）：</p>
 <pre><code class="language-bash">/opt/rocm/bin/hipcc -std=c++20 -O2 --offload-arch=gfx942 -I../common \
   -DSTUDENT_SRC="\"$PWD/a1-hello/hello.hip\"" a1-hello/test.cpp -o build/run-a1</code></pre>
@@ -524,7 +524,7 @@ rocm-smi                            # 概览：温度、功耗、频率、占用
 <p>环境变量 <code>HIP_VISIBLE_DEVICES</code> 决定程序能“看见”哪些 GPU。被选中的卡会<strong>重新从 0 编号</strong>：</p>
 <pre><code class="language-bash">HIP_VISIBLE_DEVICES=7 ./build/run-a2     # 程序里只有一张卡，它就是 device 0（物理上的 7 号卡）
 HIP_VISIBLE_DEVICES=6,7 ./some_program   # 程序里有两张卡：device 0 = 物理 6 号，device 1 = 物理 7 号</code></pre>
-<p>这就是为什么 a2 的测试总是查询 <code>device 0</code>：无论判分脚本选了哪张物理卡，在程序看来它都是 0 号。你手动运行 <code>make run</code> 时，也可以先用 rocm-smi 找一张空闲的卡，再在命令前加上 <code>HIP_VISIBLE_DEVICES=…</code>；如果你已经设置了这个变量，<code>make grade</code> 会尊重你的选择而不再自动挑卡。</p>
+<p>这就是为什么 a2 的测试总是查询 <code>device 0</code>：无论判分脚本选了哪张物理卡，在程序看来它都是 0 号。<code>make grade</code> 和 <code>make run</code> 默认用 rocm-smi 自动挑最空闲的卡（跳过显存快满的卡，几张卡一样空时随机挑一张）；如果你已经设置了这个变量（或 <code>ROCR_VISIBLE_DEVICES</code>、<code>CUDA_VISIBLE_DEVICES</code>、<code>GPU_DEVICE_ORDINAL</code>），它们会尊重你的选择而不再自动挑卡，并在第一行说明用的是哪个变量。</p>
 
 <h3 id="s6-3"><span class="sec">§6.3</span>rocprofv3：看 kernel 跑了多久</h3>
 <p><code>rocprofv3</code> 是 ROCm 自带的性能分析工具（本机 <code>/opt/rocm/bin/rocprofv3</code>）。最基本的用法是 kernel 跟踪：记录程序启动的每一个 kernel 的名字、启动参数和起止时间。在 <code>lab0-env/</code> 下先用 <code>make run A=a1</code> 编译出 <code>build/run-a1</code>，然后：</p>
