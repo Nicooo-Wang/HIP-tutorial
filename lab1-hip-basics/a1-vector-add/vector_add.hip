@@ -9,13 +9,17 @@
 __global__ void vector_add_kernel(const float* a, const float* b, float* c, int n) {
   // TODO(a1-1): 计算本线程负责的全局下标 i，做边界检查（i < n），然后写 c[i] = a[i] + b[i]（讲义 §2.3）
   // >>> 你的代码 <<<
+  auto idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < n) {
+    c[idx] = b[idx] + a[idx];
+  }
 }
 
 void launch_vector_add(const float* a, const float* b, float* c, int n, hipStream_t stream) {
   // TODO(a1-2): 自己选择 block 大小，并向上取整计算 grid，使线程总数 >= n（讲义 §2.4）
   // >>> 你的代码 <<<
-  const int block = 64;  // ← 可以改
-  const int grid = 1;    // ← 换成正确的表达式
+  const int block = 64;                     // ← 可以改
+  const int grid = (n + block - 1) / block; // ← 换成正确的表达式
   vector_add_kernel<<<grid, block, 0, stream>>>(a, b, c, n);
 }
 
@@ -27,6 +31,12 @@ __global__ void saxpy_kernel(float alpha, const float* x, float* y, int n) {
   // TODO(a1-3): 全网格只有 kSaxpyGrid * 256 个线程，n 可能远大于它。
   //             用 grid-stride loop 让每个线程处理多个元素，覆盖所有 n（讲义 §2.5）
   // >>> 你的代码 <<<
+
+  auto offset =(int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+  auto stride = (int64_t) gridDim.x * blockDim.x;
+  for (int64_t ids = offset; ids < n; ids += stride) {
+    y[ids] = alpha * x[ids] + y[ids];
+  }
 }
 
 void launch_saxpy(float alpha, const float* x, float* y, int n, hipStream_t stream) {
