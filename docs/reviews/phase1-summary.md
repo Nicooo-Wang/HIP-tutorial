@@ -40,7 +40,7 @@
 |---|---|---|---|---|---|
 | Lab 1 a2 `lds_bandwidth` | ≥ 14% × 拷贝带宽 | 658.7 GB/s | 658.8 / 658.2 / 658.3 GB/s | ≈ 0.32–0.36 | ≈ 2.3–2.5× |
 | Lab 1 a3 `shfl_bandwidth` | ≥ 28% × 拷贝带宽 | 1382.1 GB/s | 1388.1 / 1381.6 / 1387.6 GB/s | ≈ 0.68–0.74 | ≈ 2.4–2.6× |
-| Lab 1 a4 `tiled_gflops` | ≥ 2000 GFLOPS（绝对） | 4622.4 GFLOPS | 4630.1 / 4627.9 / 4620.8 GFLOPS | — | 2.3× |
+| Lab 1 a4 `tiled_gflops` | ≥ 2000 GFLOPS（绝对；终审后改为 ≥ 6.5% × 同进程 FMA 吞吐，见文末） | 4622.4 GFLOPS | 4630.1 / 4627.9 / 4620.8 GFLOPS | — | 2.3×（新阈值下 2.66×） |
 | Lab 2 a2 `bandwidth` | ≥ 55% × 拷贝带宽 | 2967.9 GB/s | 3422.9 / 3424.1 / 3317.7 GB/s（拷贝 2086 / 2090 / 2073） | 1.60–1.64 | ≈ 2.9× |
 | Lab 3 a2 `bandwidth` | ≥ 19% × 拷贝带宽 | 1114.2 GB/s | 1114.7 / 1117.4 / 1116.4 GB/s（拷贝 1996 / 1998 / 1993） | 0.56 | ≈ 2.9× |
 | Lab 3 a3 `bandwidth_aligned` | ≥ 80% × 拷贝带宽 | 3486.5 GB/s | 3545.9 / 3553.0 / 3497.3 GB/s（拷贝 2060 / 2073 / 1993） | 1.71–1.75 | ≈ 2.1–2.2× |
@@ -94,3 +94,17 @@
 - M8 Lab 2/3 未提 profiler → Lab 2 §3.4 末尾加“Lab 1 §6 的工具照常可用”，说明 rocprofv3 trace 里 kernel 名（含模板参数，实测）。
 
 验证：四份讲义 + site 浅色/深色/390 px 宽无控制台错误、无横向溢出、跨页锚点全部存在；全部 § 交叉引用（535 处）复核；新增 static_assert 片段与 `--save-temps` 命令本机编译通过；改动后重跑 `make verify-all`：test_grade 通过，4 个 Lab 均 VERIFY OK（solutions 全过、mutant 全被抓、骨架不满分；改过的 Lab 1 a3、Lab 3 a3 骨架仍能编译且 0 分）。
+
+## 第一期终审修复（2026-10-19）
+
+| 项 | 修改 |
+|---|---|
+| 选卡 | `grade.select_gpu`：`HIP_VISIBLE_DEVICES`、`ROCR_VISIBLE_DEVICES`、`CUDA_VISIBLE_DEVICES`、`GPU_DEVICE_ORDINAL` 任一已设置就不自动选卡，并在第一行说明用的是哪个变量；跳过显存 ≥95% 的卡；负载并列时随机选（避免多人同时都挤到同一张卡）；性能用例前所用卡计算占用 >50% 时打印提醒。新增无 GPU 的单元测试（模拟 rocm-smi 输出与环境变量） |
+| a4 性能阈值 | 绝对 2000 GFLOPS → 0.065 × 同进程实测 fp32 FMA 吞吐（`hk::fma_peak_gflops()`，纯寄存器微基准，与学生 kernel 交替计时，不含 GEMM 结构）。空闲：参考答案 2.66×、16×16 变体 1.77×、naive 低于阈值 1.52×；同卡并发干扰下的实测见 `lab1.md` |
+| 两个 .hip | `make grade` / `make run` 打印一行中文并以退出码 2 结束 |
+| `make test-infra` | 另外编译并运行 `common/harness_selftest.cpp`（新增 FMA 基准自检），除故意失败的协议用例外必须全部 OK |
+| `make run` | 未设置可见性变量时与 `make grade` 一样自动选卡 |
+| a3 注释 | 256-block 变体余量改为最差约 1.34×（平均约 1.4×） |
+
+验证：`make verify-all`（仓库内与全新 `git clone` 各一次）退出码 0：test_grade 21 个测试 OK、harness 自检 OK、4 个 Lab 均 VERIFY OK（48 个 mutant 全被抓，骨架不满分）；a4 参考答案 4611.8 / 4629.9 GFLOPS。
+
