@@ -32,9 +32,9 @@ __global__ void saxpy_kernel(float alpha, const float* x, float* y, int n) {
   //             用 grid-stride loop 让每个线程处理多个元素，覆盖所有 n（讲义 §2.5）
   // >>> 你的代码 <<<
 
-  auto offset =(int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-  auto stride = (int64_t) gridDim.x * blockDim.x;
-  for (int64_t ids = offset; ids < n; ids += stride) {
+  auto tid = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  auto stride = (int64_t)gridDim.x * blockDim.x;
+  for (int64_t ids = tid; ids < n; ids += stride) {
     y[ids] = alpha * x[ids] + y[ids];
   }
 }
