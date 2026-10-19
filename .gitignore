@@ -2,3 +2,5 @@ build/
 *.o
 __pycache__/
 .verify-tmp/
+compile_commands.json
+.cache/

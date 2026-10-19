@@ -1,0 +1,26 @@
+{
+  // C++ 语言服务用 clangd（补全、跳转、悬停、诊断）。编译参数来自 compile_commands.json，
+  // 由 `make compdb` 生成；新增 Lab / Assignment 后重新运行一次。
+  // clangd 22.1.0 与 ROCm 7.2 的 LLVM 22 同一大版本（系统自带的 clangd 14 解析不了 ROCm 7.2 头文件）。
+  "clangd.path": "/mnt/raid0/WangTianle/tools/clangd_22.1.0/bin/clangd",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}",
+    "--background-index",
+    "--header-insertion=never",
+    "--completion-style=detailed",
+    "--function-arg-placeholders=true",
+    "-j=8"
+  ],
+  "clangd.checkUpdates": false,
+  "clangd.detectExtensionConflicts": true,
+  // VSCode 不认识 .hip，按 C++ 打开
+  "files.associations": {
+    "*.hip": "cpp"
+  },
+  // 若以后装上微软 C/C++ 扩展，关掉它的 IntelliSense，避免和 clangd 重复/冲突
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "files.watcherExclude": {
+    "**/.cache/**": true,
+    "**/build/**": true
+  }
+}
