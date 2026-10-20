@@ -9,6 +9,11 @@
 __global__ void transpose_naive_kernel(const float* in, float* out, int rows, int cols) {
   // TODO(a2-1): 由 2D 线程坐标得到 (r, c)，边界检查后写 out（讲义 §3.2）
   // >>> 你的代码 <<<
+  int64_t cIdx = threadIdx.x + blockIdx.x * blockDim.x;
+  int64_t rIdx = threadIdx.y + blockIdx.y * blockDim.y;
+  if (cIdx < cols && rIdx < rows) {
+    out[cIdx * rows + rIdx] = in[rIdx * cols + cIdx];
+  }
 }
 
 void launch_transpose_naive(const float* in, float* out, int rows, int cols, hipStream_t stream) {
@@ -22,15 +27,32 @@ void launch_transpose_naive(const float* in, float* out, int rows, int cols, hip
 __global__ void transpose_lds_kernel(const float* in, float* out, int rows, int cols) {
   // TODO(a2-2): 设计你的分块转置（讲义 §3.4–3.6）
   //   第 0 步：决定 tile 大小与 block 形状（提示：一个 wavefront 是 64 线程，让它读一整行连续元素）
+  const int64_t cIdx = threadIdx.x + blockIdx.x * blockDim.x;
+  const int64_t rIdx = threadIdx.y + blockIdx.y * blockDim.y;
+  const int64_t cOut = threadIdx.y + blockIdx.x * blockDim.x;
+  const int64_t rOut = threadIdx.x + blockIdx.y * blockDim.y;
+  const int64_t cT = threadIdx.x;
+  const int64_t rT = threadIdx.y;
   //   第 1 步：声明 __shared__ 数组；想想为什么讲义建议多加 1 列
+  __shared__ float sMem[16][17];
   //   第 2 步：从 in 合并地读入 tile（注意矩阵边缘的越界）
-  //   第 3 步：同步——为什么必须在这里同步？
+  if (cIdx < cols && rIdx < rows) {
+    sMem[rT][cT] = in[rIdx * cols + cIdx];
+    //   第 3 步：同步——为什么必须在这里同步？
+  }
   //   第 4 步：从 LDS 按"转置后的方向"读出，合并地写入 out
+  __syncthreads();
+  if (cOut < cols && rOut < rows) {
+    out[cOut * rows + rOut] = sMem[cT][rT];
+  }
   // >>> 你的代码 <<<
 }
 
-void launch_transpose_lds(const float* in, float* out, int rows, int cols, hipStream_t stream) {
+void launch_transpose_lds(const float *in, float *out, int rows, int cols,
+                          hipStream_t stream) {
   // TODO(a2-3): 换成你的 LDS kernel 与对应的 grid/block
-  launch_transpose_naive(in, out, rows, cols, stream);
   // >>> 你的代码 <<<
+  dim3 block(16, 16);
+  dim3 grid((cols + block.x - 1) / block.x, (rows + block.y - 1) / block.y);
+  transpose_lds_kernel<<<grid, block, 0, stream>>>(in, out, rows, cols);
 }
