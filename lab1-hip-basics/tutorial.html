@@ -561,7 +561,13 @@ __global__ void reverse_each_block(const float* in, float* out) {
 <p>归约（reduction）把 n 个数合成一个：求和、求最大值、求范数。它是 softmax、layernorm、注意力里必不可少的一步，也是第一个需要线程<em>合作</em>出结果的问题：每个线程只知道自己那部分，答案却要汇总全体。</p>
 
 <h3 id="s4-1"><span class="sec">§4.1</span>两遍归约结构</h3>
-<p>block 内的线程可以通过 LDS + <code>__syncthreads()</code> 合作，但<strong>不同 block 之间没有屏障</strong>：它们可能在不同 CU 上、以任意顺序执行，甚至不会同时存在（block 数多于 GPU 能同时容纳的数量时，后面的 block 要等前面的退出才开始）。所以在普通的 kernel 里，没有现成的屏障能保证“全体 block 都算完部分和之后再汇总”。最直接、最可靠的办法是用<strong>kernel 边界</strong>当全局屏障：同一个 stream 里，第二个 kernel 一定在第一个全部结束之后才开始。（一个 kernel 里也有办法做到，但要用到本课只顺带提过的原子操作等工具——a3 书面问题 4 请你想一想。）</p>
+<p>归约要分两遍做，因为<strong>一个 kernel 里，不同 block 之间没有屏障</strong>。block 内的线程可以靠 LDS 和 <code>__syncthreads()</code> 合作，但 <code>__syncthreads()</code> 只管本 block 的线程。不同 block 可能在不同 CU 上、以任意顺序执行，甚至不会同时存在：block 数超过 GPU 能同时容纳的数量时，后面的 block 要等前面的退出才开始。所以在 kernel 里，没法等“全体 block 都算完部分和”之后再汇总。</p>
+<p>最直接、最可靠的全局屏障是 <strong>kernel 边界</strong>：同一个 stream 里，第二个 kernel 一定在第一个全部结束之后才开始。于是第 1 遍让每个 block 算出一个部分和，写进工作区 <code>ws</code>；第 2 遍只用 1 个 block，把这些部分和加起来（图 4.1）。</p>
+<p>只用一个 kernel 也能完成归约，但要用到原子操作。原子操作保证多个线程对同一个地址做“读—加—写”时不会互相覆盖，§4.5 末尾会介绍其中的 <code>atomicAdd</code>。a3 书面问题 4 请你想一想这个方案。</p>
+<details class="deep"><summary>HIP 里有没有能同步全体 block 的办法</summary>
+  <p>有，但不是普通的 kernel 启动。HIP 提供 cooperative launch：用 <code>hipLaunchCooperativeKernel</code> 启动，kernel 里用 cooperative groups 的 <code>this_grid().sync()</code> 同步全体 block。</p>
+  <p>它的前提是所有 block 能同时驻留在 GPU 上，所以 block 数有上限，不能像普通启动那样随 n 增长。本课不用它。“全体 block 常驻、在 kernel 内协作”这类设计，研究 mega kernel 时会再遇到。</p>
+</details>
 <figure class="diagram">
   <svg viewBox="0 0 640 260" role="img" aria-labelledby="fig41-t">
     <title id="fig41-t">两遍归约：第一遍多个 block 各自用 grid-stride loop 累加并做 block 内归约，写到工作区；第二遍一个 block 汇总工作区</title>
@@ -596,20 +602,33 @@ __global__ void reverse_each_block(const float* in, float* out) {
   </svg>
   <figcaption><b>图 4.1</b>两遍归约的数据流。两遍用的是<em>同一个</em> kernel：第 2 遍只是把 ws 当作输入、把 blocks 当作 n、只启动 1 个 block。</figcaption>
 </figure>
-<p>a3 的骨架已经写好了这个结构，你要读懂它的每个选择：</p>
+<p>a3 的骨架已经写好了这个结构。下面四点是骨架里的设计选择，你要读懂：</p>
 <ul>
-  <li><strong>block 数有上限。</strong><code>blocks = min(⌈n / 256⌉, kMaxBlocks = 1024)</code>。硬上限来自工作区：ws 只有 4096 个 float，block 数不能超过它。那 block 数取多少合适？光“每个 CU 分到一个 block”是不够的：§1.1 讲过，SIMD 靠在多个驻留的 wave 之间切换来掩盖显存延迟。256 个 block × 4 个 wave ÷ 320 个 SIMD ≈ 每个 SIMD 只有 3 个 wave，读带宽只有拷贝带宽的约 40%；1024 个 block（每个 SIMD 约 13 个 wave 排队，最多同时驻留 8 个）约 67%（见下方的实测）。再往上加，收益就小了，反而让第 2 遍要汇总的部分和变多。</li>
-  <li><strong>于是 n 大时线程数不够“一线程一元素”</strong>——这正是 §2.5 的局面。每个线程先用 <strong>grid-stride loop</strong> 把自己负责的所有元素累加到寄存器 <code>acc</code> 里（写法与 a1 Part B 相同，只是循环体从“写 y[i]”变成“累加 in[i]”），然后整个 block 再把 256 个 <code>acc</code> 合成一个数。循环一次都不进的线程，<code>acc</code> 保持 0，对和没有影响。</li>
-  <li><strong>每个 block 只由 thread 0 写一次 <code>dst[blockIdx.x]</code></strong>，是“写”不是“加”：ws 和 out 的初值都不可信（测试会填 NaN），不能往里累加。</li>
+  <li><strong>block 数有上限。</strong>骨架里 <code>blocks = min(⌈n / kBlock⌉, kMaxBlocks)</code>。<code>kBlock = 256</code> 是每个 block 的线程数，<code>kMaxBlocks = 1024</code> 是 block 数的上限。每个 block 要在工作区里占一个位置写部分和，而工作区 <code>ws</code> 只有 4096 个 float（骨架里的常量 <code>kWorkspaceFloats</code>），所以上限不能超过 4096。</li>
+  <li><strong>block 数要多到能填满 SIMD。</strong>§1.1 讲过，SIMD 靠在多个驻留的 wavefront 之间切换来掩盖显存延迟。每个 block 有 256 ÷ 64 = 4 个 wavefront，全卡有 80 × 4 = 320 个 SIMD。如果只用 256 个 block，一共 1024 个 wavefront，每个 SIMD 平均只分到 3.2 个，离每个 SIMD 最多驻留 8 个还差得远。全卡最多同时驻留 320 × 8 = 2560 个 wavefront，也就是 640 个 block；骨架的上限 1024 超过了 640，能把全卡填满。两种设置的实测带宽见下方提示框。</li>
+  <li><strong>每个线程先用 grid-stride loop 累加。</strong>block 数有上限，n 大时线程数不够“一线程一元素”，这正是 §2.5 的情况。每个线程先用 <strong>grid-stride loop</strong> 把自己负责的所有元素累加到局部变量 <code>acc</code> 里。写法与 a1 Part B 相同，只是循环体从“写 y[i]”变成“累加 in[i]”。然后整个 block 再把 256 个 <code>acc</code> 合成一个数。一次循环都没进的线程，<code>acc</code> 保持 0，不影响结果。</li>
+  <li><strong>每个 block 只由 thread 0 写一次结果。</strong>kernel 的输出参数 <code>dst</code> 在第 1 遍是 <code>ws</code>，在第 2 遍是 <code>out</code>。thread 0 执行的是 <code>dst[blockIdx.x] = s</code>（<code>s</code> 是本 block 的和），是“写”不是“加”。测试会把 <code>ws</code> 和 <code>out</code> 预先填成 NaN，往里累加只会得到 NaN。</li>
 </ul>
-<p>剩下的问题就是“block 内的 256 个数怎么合成一个”，即 <code>block_reduce_*</code>。下面讲两种做法。</p>
+<details class="deep"><summary>block 数不是越多越好：kMaxBlocks 的实测对比</summary>
+  <p>把参考实现的 <code>kMaxBlocks</code> 换成不同的值，在空闲的 MI308X 上跑 <code>shfl_bandwidth</code>（n = 2<sup>26</sup> − 1）。同进程拷贝带宽约 2.0 TB/s，下表的百分比按它折算：</p>
+  <div class="table-wrap"><table class="facts">
+    <thead><tr><th>kMaxBlocks</th><th>读带宽</th><th>约占拷贝带宽</th></tr></thead>
+    <tbody><tr><td>256</td><td>≈ 0.79 TB/s</td><td>40%</td></tr><tr><td>640</td><td>≈ 1.66 TB/s</td><td>80%</td></tr><tr><td>1024（骨架）</td><td>≈ 1.39 TB/s</td><td>67%</td></tr><tr><td>1280</td><td>≈ 1.63 TB/s</td><td>80%</td></tr><tr><td>4096</td><td>≈ 1.32 TB/s</td><td>65%</td></tr></tbody>
+  </table></div>
+  <p>640 比 1024 快。一个合理的解释是 block 分批执行：全卡一次最多驻留 640 个 block，1024 个 block 要分两批跑，第二批只有 384 个，每个 SIMD 平均只有约 4.8 个 wavefront，这段时间带宽没吃满。640 和 1280 正好是整批，所以更快。block 再多（4096）也不会更快，因为每个 block 分到的元素更少，block 内归约这类固定开销的占比变大。</p>
+  <p>这些是一次测量的结果，换个 n 结论可能不同。骨架的 1024 已经远高于及格线，作业不需要调它。</p>
+</details>
+<p>剩下的问题是：block 内的 256 个数怎么合成一个。这是 <code>block_reduce_lds</code> 和 <code>block_reduce_shfl</code> 两个函数要做的事，§4.2 和 §4.4 分别讲两种做法。</p>
 <div class="callout note" data-title="shfl_bandwidth 用例：为什么 block 数很重要">
-  <p>归约每个元素只读一次、几乎不写，用<strong>读带宽</strong>（n × 4 字节 ÷ 时间）衡量，阈值是同进程拷贝带宽的 28%。空闲 MI308X 上实测：参考实现（简单设计，最多 1024 个 block）约 67%；把 block 上限降到 256 也有约 40%，同样能过；更好的设计可以达到甚至超过拷贝带宽本身（归约只读不写）。如果第 1 遍只用 1 个 block，就只有 1 个 CU 在干活，另外 79 个闲着，读带宽不到拷贝带宽的 0.2%。骨架的 block 数已经设好了，你只要保证 grid-stride 访问是合并的（§2.5 的提醒），block 内归约别太慢。</p>
+  <p>这个用例用<strong>读带宽</strong>衡量归约：n × 4 字节 ÷ 时间。归约每个元素只读一次、几乎不写，所以只算读。及格线是同进程实测拷贝带宽的 28%。</p>
+  <p>空闲 MI308X 上实测：参考实现（最多 1024 个 block）约为拷贝带宽的 67%；把 block 上限降到 256，约 40%，也能过。第 1 遍如果只用 1 个 block，就只有 1 个 CU 在干活，另外 79 个闲着，读带宽不到拷贝带宽的 0.2%。</p>
+  <p>读带宽可以超过拷贝带宽：拷贝要同时读和写，而只读 kernel 实测能到 3–3.6 TB/s（§1.3）。所以更好的设计能达到甚至超过拷贝带宽。</p>
+  <p>骨架的 block 数已经设好了。你只要保证 grid-stride 访问是合并的（§2.5），block 内归约别太慢。</p>
 </div>
 
 <h3 id="s4-2"><span class="sec">§4.2</span>LDS 树形归约</h3>
-<p>最经典的 block 内归约是“对折”：每个线程先把自己的值放进 LDS 数组 <code>s[0 .. kBlock)</code>；然后把数组看成前后两半，前一半的每个槽位加上后一半中与它“对齐”的那个槽位——两两配对、加成一个；再对前一半重复同样的对折，直到只剩一个数。</p>
-<p>每一层活跃线程减半：256 个数 → 128 → 64 → … → 1，共 log₂256 = 8 层。“前一半的槽位 t 加上后一半中对应的槽位”——这个对应槽位的下标、以及每一层哪些线程活跃，请从下面的小部件（16 个元素，kBlock = 16）中自己读出来：</p>
+<p>最经典的 block 内归约是“对折”。每个线程先把自己的值写进 LDS 数组 <code>s[0 .. kBlock)</code>，<code>kBlock = 256</code> 是 block 的线程数。然后把数组看成前后两半，前一半的每个槽位加上后一半里位置对应的那个槽位，两两加成一个。再对前一半重复同样的对折，直到只剩一个数。</p>
+<p>每对折一层，活跃线程减半：256 个数 → 128 → 64 → … → 1，共 log₂256 = 8 层。小部件和后面几节把一层里配对的两个槽位之间的距离叫 <code>stride</code>。每一层的 stride 是多少、槽位 t 和哪个槽位配对、哪些线程活跃，请从下面的小部件里自己读出来。小部件只画 16 个元素（相当于 kBlock = 16），规律和 256 个元素相同。</p>
 <figure class="widget" data-widget="tree-reduce">
   <div class="widget-head"><b>LDS 树形归约（16 个元素）</b><span class="hint">点“下一层”或“播放”</span></div>
   <div class="widget-controls">
@@ -627,14 +646,26 @@ __global__ void reverse_each_block(const float* in, float* out) {
 </figure>
 <p>小部件只画了“每一层算什么”，没画线程之间怎么<em>协调</em>。写代码之前，对每一层问自己两个问题（§3.5 的思考方式）：</p>
 <ul>
-  <li><strong>这一层要读的槽位，是谁写的？</strong>是本线程自己，还是上一层别的线程——甚至别的 wavefront？</li>
-  <li><strong>读的时候，它一定已经写完了吗？</strong>如果不能保证，需要什么？那个东西应该放在哪里，才能让 block 里<em>每个</em>线程都执行到它（包括这一层不活跃的线程）？</li>
+  <li><strong>这一层要读的槽位，是谁写的？</strong>是本线程自己，还是上一层别的线程，甚至别的 wavefront？</li>
+  <li><strong>读的时候，它一定已经写完了吗？</strong>如果不能保证，需要什么？那个东西放在哪里，才能让 block 里<em>每个</em>线程都执行到它，包括这一层不活跃的线程？</li>
 </ul>
-<p>另外比较一下两种寻址方式：</p>
+<p><strong>推荐用顺序寻址，因为它让活跃线程集中在尽量少的 wavefront 里。</strong>两种寻址的区别在于每层哪些线程活跃：</p>
 <ul>
-  <li><strong>为什么选“顺序寻址”。</strong>顺序寻址时活跃线程是连续的一段：前几层里整个 wavefront 要么全活跃、要么全不活跃，没有分支发散（§2.1）；而且同一 wave 读的是连续地址，没有 bank conflict（§3.6）。交错寻址的活跃线程星星点点地分布在所有 wavefront 里，每个 wave 都只有少数 lane 在干活，还会产生 bank conflict。</li>
+  <li><strong>顺序寻址</strong>（<code>t &lt; stride</code> 的线程活跃）：活跃线程是从 0 开始连续的一段。stride ≥ 64 的那几层，每个 wavefront 要么 64 个 lane 全活跃，要么全不活跃；全不活跃的 wavefront 直接跳过这一层的加法。stride &lt; 64 以后只剩 wavefront 0 有活，§4.3 会换一种更快的办法处理这几层。</li>
+  <li><strong>交错寻址</strong>（<code>t % (2·stride) == 0</code> 的线程活跃）：活跃线程分散在多个 wavefront 里。每个 wavefront 都要执行这一层的加法，却只有少数 lane 在干活，其余 lane 被执行掩码关掉、空等（§2.1）。</li>
 </ul>
-<p>最后，函数返回时只要求 thread 0 拿到正确结果（骨架注释中的约定），因为只有 thread 0 会写 <code>dst[blockIdx.x]</code>。</p>
+<p>用 256 个线程（4 个 wavefront）数一数：把每一层要执行加法的 wavefront 个数加起来，8 层合计，顺序寻址是 9 个，交错寻址是 27 个。两种写法在这里都没有 bank conflict（§3.6）：同一半个 wavefront 里的活跃 lane，读写的槽位下标互不相同，又都落在 32 个连续下标之内，所以各占一个 bank。</p>
+<details class="deep"><summary>“全不活跃的 wavefront 直接跳过”是怎么做到的</summary>
+  <p>编译器在 <code>if</code> 的入口生成一条条件跳转：如果这个 wavefront 的执行掩码全为 0，就跳过整个 <code>if</code> 体。把参考实现的 <code>block_reduce_lds</code> 编译成汇编，每一层的加法前面都有一条 <code>s_cbranch_execz</code>，就是这条跳转。</p>
+  <p>只要还有一个 lane 活跃，整个 wavefront 就得执行 <code>if</code> 体。所以 wavefront 的执行次数取决于“有多少个 wavefront 里至少有一个活跃 lane”，而不是活跃线程总数。</p>
+</details>
+<details class="deep"><summary>另一种交错写法会有 bank conflict</summary>
+  <p>网上常见的另一种交错写法，让连续的线程处理相隔 2·stride 的槽位：</p>
+  <pre><code class="language-cpp">int i = 2 * stride * t;
+if (i &lt; kBlock) s[i] += s[i + stride];</code></pre>
+  <p>它的活跃线程是连续的，wavefront 执行次数和顺序寻址一样少。但同一半个 wavefront 里相邻 lane 的地址相差 2·stride 个 float，会撞到同一个 bank。按 §3.6 的模型逐层数：stride = 1 时 2 路冲突，stride = 4、8、16 时达到 8 路冲突。顺序寻址既没有这个问题，活跃 wavefront 也少，所以是三种写法里最好的。</p>
+</details>
+<p>最后，函数返回时只要求 thread 0 拿到正确结果。这是骨架注释里的约定，因为只有 thread 0 会写 <code>dst[blockIdx.x]</code>。</p>
 
 <h3 id="s4-3"><span class="sec">§4.3</span><code>__shfl_down</code> 与 wave64</h3>
 <p>树形归约的后几层很浪费：stride ≤ 64 时（顺序寻址下只有 t &lt; 64 的线程活跃）只剩一个 wavefront 在干活，却仍然每层都要走一遍 LDS 和屏障。同一个 wavefront 的 lane 之间有更快的通道：<strong>shuffle</strong>，让 lane 直接读取<em>另一个 lane 的寄存器</em>，不需要 LDS 数组，也不需要 <code>__syncthreads()</code>（一个 wavefront 的 64 个 lane 本来就在同步执行同一条指令）。</p>
