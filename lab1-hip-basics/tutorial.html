@@ -80,7 +80,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
 <h3 id="s1-2"><span class="sec">§1.2</span>内存层级：寄存器 / LDS / L2 / Infinity Cache / HBM</h3>
 <p>kernel 能用到的存储从近到远是：</p>
 <ul>
-  <li><strong>寄存器（VGPR）</strong>：每个线程私有，最快。线程用到的局部标量通常放在寄存器里，例如累加器 <code>acc</code>。局部变量实际放在哪里由编译器决定：局部数组、或寄存器不够时“溢出”的值，可能被放进 <strong>scratch</strong>（每个线程私有的一块显存，慢得多）。§5.4 讲怎样检查。</li>
+  <li><strong>寄存器（VGPR，向量通用寄存器）</strong>：每个线程私有，最快。线程用到的局部标量通常放在寄存器里，例如累加器 <code>acc</code>。局部变量实际放在哪里由编译器决定：局部数组、或寄存器不够时“溢出”的值，可能被放进 <strong>scratch</strong>（每个线程私有的一块显存，慢得多）。§5.4 讲怎样检查。</li>
   <li><strong>LDS（Local Data Share）</strong>：每个 CU 一块 64 KiB 的片上存储，同一个 block 的线程共享，延迟远低于显存。代码里用 <code>__shared__</code> 声明（§3.4）。CUDA 资料里叫 shared memory。</li>
   <li><strong>L1 / L2 缓存</strong>：硬件自动管理。每个 CU 有 32 KiB L1，每个 XCD 有 4 MiB L2。缓存以 <strong>128 字节的 cache line</strong> 为单位管理数据（rocminfo 的 <code>Cacheline Size: 128</code>）。这个数字是 §3.1 合并访存的基础。</li>
   <li><strong>Infinity Cache</strong>：256 MiB，全卡共享，位于 L2 和 HBM 之间。数据放得进它、又被反复读取时，由它直接供给，有效带宽可以高于 HBM 本身。</li>
@@ -133,7 +133,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
 
 <h3 id="s1-3"><span class="sec">§1.3</span>本机参数表</h3>
 <p>下表分两部分。前半部分是在本机直接查到的数值，与 <a href="../lab0-env/tutorial.html#s2-3">Lab 0 §2.3</a> 一致的项目不再重复来源细节。后半部分是两个<strong>理论峰值</strong>（按公式从查到的数据算出）和几个<strong>本机实测</strong>值。表中的 rocminfo 指 <code>/opt/rocm/bin/rocminfo</code>，它不在默认 PATH 里。</p>
-<p>两类数字的含义不同。理论峰值是按硬件参数算出的上限，任何 kernel 都不会超过。实测值是某个特定的小测试程序（微基准）在本机达到过的性能，会随写法、数据量和机器状态变化；别的写法可能更快，所以它不是上限。</p>
+<p>两类数字的含义不同。理论峰值是在指定的运算类型和访存层级下，按硬件参数算出的上限。本表的两项分别是 HBM 的数据传输和 fp32 向量计算：读写 HBM 的速度超不过前者，fp32 向量运算超不过后者；缓存供给的数据、低精度的矩阵指令（§5.5）不受它们限制，比较时要用相同口径。实测值是某个特定的小测试程序（微基准）在本机达到过的性能，会随写法、数据量和机器状态变化；别的写法可能更快，所以它不是上限。</p>
 <div class="table-wrap">
 <table class="facts">
   <caption>AMD Instinct MI308X（gfx942，CDNA3）· 本机查询 / 计算 / 实测</caption>
@@ -303,7 +303,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
   <li><strong>LDS</strong>：一个 block 用 48 KiB LDS 时，64 KiB 的 CU 里只放得下 1 个这样的 block（§3.4 再谈）。</li>
 </ul>
 <p><strong>驻留的 wavefront 数 ÷ 32</strong> 就是<strong>占用率（occupancy）</strong>。占用率不是越高越好：每个线程多用一些寄存器，往往能多干一些活。但对向量加法这种纯访存 kernel，驻留的 wavefront 够不够多，直接决定能不能把显存带宽吃满。</p>
-<p>实践中 <strong>256</strong> 是稳妥的默认值。不用 LDS、寄存器也用得少的 kernel，block 取 64 到 1024 都能让每个 CU 驻满 32 个 wavefront（本机实测，见下面的折叠框），所以对向量加法来说，block 大小几乎不影响占用率。block 太大的问题在另一头：n 不大时 block 数少，可能只占用少数几个 CU。256 线程（4 个 wavefront）在两头都不吃亏。</p>
+<p>实践中 <strong>256</strong> 是稳妥的默认值。不用 LDS、寄存器也用得少的 kernel，只要 grid 里的 block 足够多，实测 64、128、256、1024 这四种 block 大小都能让每个 CU 驻满 32 个 wavefront（见下面的折叠框）。其他大小还要算一算完整的 block 能不能正好填满 32 个槽位：例如 768 线程的 block 有 12 个 wavefront，一个 CU 只放得下 2 个，共 24 个 wavefront。block 太大的问题在另一头：n 不大时 block 数少，可能只占用少数几个 CU。256 线程（4 个 wavefront）在两头都不吃亏。</p>
 <details class="deep"><summary>本机实测：不同 block 大小、不同 LDS 用量下，每个 CU 能驻留几个 block</summary>
   <p>测法：启动 20000 个 block，每个 block 开始时把全局计数器加 1、记下计数器的最大值，空转约 200 μs 后再减 1。计数器的最大值就是全卡同时驻留的 block 数。kernel 几乎不用寄存器。</p>
   <div class="table-wrap"><table class="facts">
@@ -317,7 +317,7 @@ table.facts td.num.hl { color: var(--accent); font-weight: 700; }
       <tr><td>256</td><td>48 KiB</td><td>80</td><td>1</td><td>4</td></tr>
     </tbody>
   </table></div>
-  <p>前四行说明，资源不紧张时 block 大小不影响能驻留的 wavefront 数，一个 CU 能放下 32 个 64 线程的 block。后两行说明 LDS 会直接限制驻留数：64 KiB 的 LDS 只够放 4 个 16 KiB 的 block，或 1 个 48 KiB 的 block。</p>
+  <p>前四行说明，资源不紧张时，这四种 block 大小都能填满每个 CU 的 32 个 wavefront 槽位，一个 CU 能放下 32 个 64 线程的 block。后两行说明 LDS 会直接限制驻留数：64 KiB 的 LDS 只够放 4 个 16 KiB 的 block，或 1 个 48 KiB 的 block。</p>
 </details>
 <div class="callout pitfall">
   <p>别忘了 n 的两种极端：n = 1 时 grid 只有 1 个 block；n = 2<sup>24</sup> + 3 时 grid 有 65537 个 block（B = 256）。两种情况都要算对。测试覆盖了 n = 1、7、1023、1024、100003、2<sup>24</sup> + 3。</p>
@@ -678,7 +678,7 @@ __global__ void reverse_each_block(const float* in, float* out) {
     <thead><tr><th>kMaxBlocks</th><th>读带宽</th><th>约占拷贝带宽</th></tr></thead>
     <tbody><tr><td>256</td><td>≈ 0.79 TB/s</td><td>40%</td></tr><tr><td>640</td><td>≈ 1.66 TB/s</td><td>80%</td></tr><tr><td>1024（骨架）</td><td>≈ 1.39 TB/s</td><td>67%</td></tr><tr><td>1280</td><td>≈ 1.63 TB/s</td><td>80%</td></tr><tr><td>4096</td><td>≈ 1.32 TB/s</td><td>65%</td></tr></tbody>
   </table></div>
-  <p>640 比 1024 快。一个合理的解释是 block 分批执行：全卡一次最多驻留 640 个 block，1024 个 block 要分两批跑，第二批只有 384 个，每个 SIMD 平均只有约 4.8 个 wavefront，这段时间带宽没吃满。640 和 1280 正好是整批，所以更快。block 再多（4096）也不会更快，因为每个 block 分到的元素更少，block 内归约这类固定开销的占比变大。</p>
+  <p>这次测量中，640 比 1024 快。一个可能的原因是运行末段的并行度下降：全卡最多同时驻留 640 个 block，1024 个 block 时，前段接近驻满，到后段剩下的 block 填不满全卡，这段时间带宽没吃满。注意 block 并不按“整批”同步执行：有 block 退出，后面的 block 就陆续补进来。block 更多（4096）时每个 block 分到的元素更少，block 内归约这类固定开销的占比变大，也会影响结果。这些解释都还需要用剖析工具验证。</p>
   <p>这些是一次测量的结果，换个 n 结论可能不同。骨架的 1024 已经远高于及格线，作业不需要调它。</p>
 </details>
 <p>剩下的问题是：block 内的 256 个数怎么合成一个。这是 <code>block_reduce_lds</code> 和 <code>block_reduce_shfl</code> 两个函数要做的事，§4.2 和 §4.4 分别讲两种做法。</p>
@@ -715,7 +715,7 @@ __global__ void reverse_each_block(const float* in, float* out) {
 <p><strong>推荐用顺序寻址，因为它让活跃线程集中在尽量少的 wavefront 里。</strong>两种寻址的区别在于每层哪些线程活跃：</p>
 <ul>
   <li><strong>顺序寻址</strong>（<code>t &lt; stride</code> 的线程活跃）：活跃线程是从 0 开始连续的一段。stride ≥ 64 的那几层，每个 wavefront 要么 64 个 lane 全活跃，要么全不活跃；全不活跃的 wavefront 直接跳过这一层的加法。stride &lt; 64 以后只剩 wavefront 0 有活，§4.3 会换一种更快的办法处理这几层。</li>
-  <li><strong>交错寻址</strong>（<code>t % (2·stride) == 0</code> 的线程活跃）：活跃线程分散在多个 wavefront 里。每个 wavefront 都要执行这一层的加法，却只有少数 lane 在干活，其余 lane 被执行掩码关掉、空等（§2.1）。</li>
+  <li><strong>交错寻址</strong>（<code>t % (2·stride) == 0</code> 的线程活跃）：前几层的活跃线程分散在多个 wavefront 里。每个含有活跃 lane 的 wavefront 都要执行这一层的加法，却只有少数 lane 在干活，其余 lane 被执行掩码关掉、空等（§2.1）。到最后两层，活跃线程变少，才有 wavefront 完全不活跃。</li>
 </ul>
 <p>用 256 个线程（4 个 wavefront）数一数：把每一层要执行加法的 wavefront 个数加起来，8 层合计，顺序寻址是 9 个，交错寻址是 27 个。两种写法在这里都没有 bank conflict（§3.6）：同一半个 wavefront 里的活跃 lane，读写的槽位下标互不相同，又都落在 32 个连续下标之内，所以各占一个 bank。</p>
 <details class="deep"><summary>“全不活跃的 wavefront 直接跳过”是怎么做到的</summary>
@@ -838,7 +838,7 @@ float __shfl_down(float var, unsigned int lane_delta, int width = warpSize);</co
 <p>但容差有个弱点：漏加或多加一个元素，误差可能小到藏在容差里。于是测试另外用<strong>全 1 输入</strong>做精确比较。原理是：fp32 能精确表示 0 到 2<sup>24</sup> 之间的每一个整数。全 1 输入的所有部分和都是不超过 n 的整数，n &lt; 2<sup>24</sup> 时每一步加法都没有舍入，所以<em>不管按什么顺序加</em>，结果都恰好等于 n。漏掉或重复一个元素，结果就差 1，立刻暴露。</p>
 <div class="callout warn" data-title="想一想：越过 2^24 之后">
   <p>2<sup>24</sup> = 16777216 往上，相邻两个 fp32 的间距变成 2。这时 16777216 + 1 的精确结果 16777217 不可表示，要舍入到最近的可表示数。它正好在 16777216 和 16777218 中间，IEEE 754 规定这种情况取二进制有效数字最后一位为 0（偶数）的那个。顺着这个思路，你能推出“单线程从 0 开始对 2<sup>25</sup> 个 1 顺序累加”的结果吗？（a3 书面问题 2。）</p>
-  <p>分块求和时，每个部分和只累加了一小部分数据，数值比总和小得多，每一步加法的舍入误差也就小得多。这是并行归约在精度上的一个附带好处。</p>
+  <p>对全 1 这样的输入，分块让每个线程累加的 1 少得多，部分和远小于 2<sup>24</sup>，就碰不到上面说的舍入问题。对一般输入，误差还取决于数值本身和合并顺序，分块不保证误差一定更小：例如 [2<sup>24</sup>, −2<sup>24</sup>, 1, 0] 顺序相加得 1，分成 [2<sup>24</sup>, 1] 和 [−2<sup>24</sup>, 0] 两组再合并却得 0。</p>
 </div>
 <p>用例 <code>repeatable_output</code> 连续调用两次，按容差比较两次的结果，主要检查你有没有把结果累加到上一次的 <code>out</code> 上。它不检查两次是否逐位相同。不过骨架的两遍结构本身是可重复的：每个 block 的线程负责哪些元素、按什么顺序合并都是固定的，只要没有数据竞争，两次结果应当完全一样。</p>
 <p>如果改用原子加 <code>atomicAdd</code>（见下方提示框）把各 block 的部分和加到同一个地址，block 完成的先后每次不同，浮点结果就可能每次差一点。这是以后写跨 block 归约时要权衡的。</p>
@@ -984,8 +984,8 @@ __global__ void sum_dist(const float* x, int n, const float* p, int m, float* y)
   <li><strong>资源</strong>：累加器占寄存器，As + Bs 占 LDS。例如 BM = BN = 64、BK = 16 时，LDS 用量是 (64 × 16 + 16 × 64) × 4 字节 = 8 KiB。占用太多会降低 occupancy（§2.4）。</li>
 </ul>
 <h4>让累加器真的留在寄存器里</h4>
-<p>TM × TN 个累加器在 C++ 里自然写成一个小数组 <code>float acc[TM][TN]</code>。要让它留在寄存器里，编译器必须在编译期就知道每一次访问的是 <code>acc</code> 的哪个元素，才能把每个元素固定放进一个寄存器。</p>
-<p>下标或循环边界在编译期未知时，数组常常会被放进 <strong>scratch</strong>：每个线程私有的一块显存，经缓存访问。这样每次乘加都变成一次访存，结果仍然正确，只是慢很多，判分只会告诉你“性能 FAIL”。编译器有时也会生成“运行时再挑选用哪个寄存器”的指令，同样比直接访问慢。要让编译器确定下标，需要两件事：</p>
+<p>TM × TN 个累加器在 C++ 里自然写成一个小数组 <code>float acc[TM][TN]</code>。最好让访问 <code>acc</code> 的下标在编译期确定，并把访问它的循环展开：这样编译器最容易把每个元素分配到一个固定的寄存器里。</p>
+<p>下标或循环边界在编译期未知时，结果取决于编译器。数组可能仍留在寄存器里，由“运行时再挑选用哪个寄存器”的指令访问，这比直接访问慢；也常常被放进 <strong>scratch</strong>（每个线程私有的一块显存，经缓存访问），这样每次乘加都变成一次访存，结果仍然正确，只是慢很多，判分只会告诉你“性能 FAIL”。到底是哪种，要用下文的资源报告确认。要让编译器确定下标，需要两件事：</p>
 <ul>
   <li>TM、TN 和访问 <code>acc</code> 的循环边界都是<strong>编译期常量</strong>，例如 <code>constexpr int TM = 4;</code>。不要用 kernel 参数或其他运行时变量当边界。</li>
   <li>访问 <code>acc</code> 的循环被<strong>完全展开</strong>。展开就是编译器把循环体按次数复制多份，每份里的 i、j 换成字面常数，于是访问变成 <code>acc[0][0]</code>、<code>acc[0][1]</code>……边界是常量的小循环在 <code>-O2</code> 下通常会自动展开；在循环前写 <code>#pragma unroll</code> 可以明确要求展开。</li>
@@ -1032,7 +1032,7 @@ remark:     VGPRs Spill: 0</code></pre>
 </div>
 <details class="deep"><summary>为什么说这个容差不是普遍的保证</summary>
   <p>可以构造出一个按顺序正确累加、却超出容差的例子。取 K = 512，乘积依次是 1 和 511 个 2<sup>−25</sup>。fp32 在 1 附近的间距是 2<sup>−23</sup>，1 + 2<sup>−25</sup> 会舍入回 1，所以顺序累加的 fp32 结果一直是 1。精确结果是 1 + 511 × 2<sup>−25</sup> ≈ 1.0000152，误差约 1.52 × 10<sup>−5</sup>；容差是 1e-5 × 1.0000152 + 1e-6 ≈ 1.10 × 10<sup>−5</sup>，被超过了。</p>
-  <p>测试用的是 [−1, 1) 里的随机数，舍入误差会互相抵消，典型误差远小于容差，不会出现这种情况。</p>
+  <p>测试用的是 [−1, 1) 里的随机数。对本课常见的 fp32 实现，舍入误差通常会部分抵消，典型误差远小于容差。这是经验现象：输入范围和随机性本身并不保证不超出容差，在 [−1, 1) 里同样能构造出类似上面的反例。</p>
 </details>
 <div class="callout warn" data-title="判分抓不到的两种 bug">
   <p>有两类错误在本机上几乎不会让测试失败，只能靠你自己推理排除：</p>
