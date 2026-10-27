@@ -135,7 +135,7 @@ __global__ void copy4(const float* __restrict__ src, float* __restrict__ dst, in
 <h2 id="s2"><span class="sec">§2</span>C++ 速成：读懂 CK-Tile 需要的编译期编程</h2>
 <p>打开任何一个 CK-Tile 头文件，你会看到满屏的 <code>template</code>、<code>number&lt;…&gt;{}</code>、<code>static_for</code>、<code>if constexpr</code> 和 <code>[&amp;](auto i) {…}</code>。它们服务于同一个目的：<strong>让尽可能多的计算发生在编译期</strong>。在 GPU 上这不只是“快一点”，还关系到数据能不能留在寄存器里：</p>
 <ul>
-  <li><strong>下标在编译期已知，编译器才能把数组的每个元素固定放在一个寄存器里。</strong>下标要到运行期才知道时，编译器只能另想办法：用一串条件选择指令挑出要的元素，或者把整个数组放进 scratch（每线程私有、在显存里，很慢）。数组越大，越可能是后者。用编译期下标，读一个元素就只是一次寄存器读。</li>
+  <li><strong>下标在编译期已知，最便于编译器把数组的每个元素分配到固定的寄存器里</strong>，读一个元素就是直接读那个寄存器。下标要到运行期才知道时，编译器要另想办法：数组仍可以留在寄存器里，用一串条件选择指令挑出要的元素；也可能整个数组被放进 scratch（每线程私有、在显存里，很慢）。数组越大，越可能是后者，具体取决于代码和编译结果。反过来，编译期下标也不保证不会因寄存器不够而溢出，仍要看资源报告（Lab 1 §5.4）。</li>
   <li>tile 的大小、每个线程负责几个元素、循环几次，都在编译期确定，编译器就能把循环完全展开，把多次标量访存合并成一条向量指令。</li>
   <li>布局写错了（比如分块大小不整除），可以用 <code>static_assert</code> 在编译期就报出来，而不是跑出一堆错数。</li>
 </ul>
@@ -765,7 +765,7 @@ constexpr auto dist = make_static_tile_distribution(
 </figure>
 <p>这样排，是为了让同一轮里的一条指令完全合并：64 个 lane 各取 4 个连续 float（16 字节），lane 之间首尾相接，合起来是 1024 个连续字节。Y<sub>1</sub> 认领的 h<sub>2</sub> 是 X0 最低位的一段，在内存里连续，长度 4。再加上 §3.1 视图承诺的向量长度 4 和 stride 1，CK-Tile 就沿 Y<sub>1</sub> 选出每次 4 个 float（16 字节）的向量访存。这个 4 正是 a1 E4 里 <code>vec16&lt;float&gt;()</code> 的结果：16 字节装 4 个 float。惯例上把这一维放在 Y 的最后，这样它在线程缓冲区里也是连续的。</p>
 <details class="deep"><summary>CK-Tile 怎样选出向量长度</summary>
-  <p>CK-Tile 为每个 Y 维算一个“安全向量长度”，再从在内存里连续（stride 为 1）的 Y 维中，挑安全向量长度最大的那个做向量访问（<code>core/tensor/tile_window_base.hpp</code> 第 152–170 行）。对认领 X 最低位一段的 Y 维，安全向量长度 = gcd(视图承诺的向量长度, 这一段的长度)，而且视图必须承诺最后一维 stride 为 1，这就是 §3.1 最后两个参数的用处。</p>
+  <p>CK-Tile 为每个 Y 维算一个“安全向量长度”，再从在内存里连续（stride 为 1）的 Y 维中，挑安全向量长度最大的那个做向量访问（<code>core/tensor/tile_window_base.hpp</code> 第 152–170 行）。对本例的一维连续数组，Y<sub>1</sub> 认领 X0 的最低位段；视图承诺向量长度 V、最后一维 stride 为 1 时，这个 Y 维的安全向量长度是 gcd(V, 段长)，这就是 §3.1 最后两个参数的用处。多维 naive 视图的这两个承诺只作用于最后一维（<code>tensor_descriptor.hpp</code> 第 293–299 行），不能套到其他 X 维：例如 4 × 64 的行主序视图，让 Y 认领行维的最低位段，安全向量长度不是 gcd(4, 4)，访问仍是逐元素的。</p>
   <p>本例选中的是 Y<sub>1</sub>：gcd(4, 4) = 4。本机实测：视图承诺 8 时结果仍是 gcd(8, 4) = 4，承诺 2 时是 2，不承诺时是 1。</p>
 </details>
 <p>设计一个 encoding 时，可以按这张清单自查：</p>
@@ -773,7 +773,7 @@ constexpr auto dist = make_static_tile_distribution(
   <li>每个 X 维的 H 各段之积 = tile 在这一维的长度。</li>
   <li>H 的每一段恰好被一个 P 或一个 Y 认领，不重不漏。</li>
   <li>P 维的个数与 block 的形状相符：block 只有一个 wavefront 用 1 个，多个 wavefront 用 2 个（warp, lane）。</li>
-  <li>P<sub>0</sub>=warp 认领的段长之积 = block 里的 wavefront 数；lane 认领的段长之积 = 64（即 <code>get_warp_size()</code>）。段长之积小于实际的 wavefront 数或 lane 数时，多出来的线程算出的坐标超出 H 的范围，会读写到不该碰的位置；大于时，H 里有一部分坐标没有线程对应，那些元素没人处理。</li>
+  <li>P<sub>0</sub>=warp 认领的段长之积 = block 里的 wavefront 数；lane 认领的段长之积 = 64（即 <code>get_warp_size()</code>）。P 认领 H 时，段长之积与实际线程数不匹配，可能造成漏算、重复处理或越界访问（超出 buffer range 的部分会被硬件屏蔽）。本课不用 R 复制；用到 R 时，还要另行核对复制的份数。</li>
   <li>对本课的一维连续数组，让一个 Y 维认领 X0 最低位的一段，并让视图承诺最后一维 stride 为 1，这一段才能向量化。推广到行主序二维 tile 时，要选列维（最后一维）里的连续段：逻辑坐标相邻，不一定内存相邻。惯例上把选中的 Y 维放在 Y 的最后。</li>
 </ol>
 <div class="callout note" data-title="R 维：让多个 wavefront 拿到同一份数据">
@@ -924,7 +924,7 @@ CK_TILE_HOST_DEVICE constexpr const DataType&amp; operator[](TileDistributedIndi
 
     return thread_buf_[number&lt;ThreadTensorDesc{}.calculate_offset(y_idx) / PackedSize&gt;{}];
 }</code></pre>
-  <p>和 tuple 的 <code>at(number&lt;I&gt;)</code> 一样，参数没有名字，下标完全在类型 <code>TileDistributedIndices</code> 里。由它在<strong>编译期</strong>算出 Y 坐标，再算出寄存器数组里的偏移，最后用 <code>number&lt;偏移&gt;</code> 去取 <code>thread_buf_</code>。第 116 行的 <code>static_assert</code> 要求下标是静态的，就是为了在编译期确定这个偏移，让每个元素固定在寄存器里（§2 开头）。第 126 行的 <code>operator()</code> 是对应的可写版本。</p>
+  <p>和 tuple 的 <code>at(number&lt;I&gt;)</code> 一样，参数没有名字，下标完全在类型 <code>TileDistributedIndices</code> 里。由它在<strong>编译期</strong>算出 Y 坐标，再算出寄存器数组里的偏移，最后用 <code>number&lt;偏移&gt;</code> 去取 <code>thread_buf_</code>。第 116 行的 <code>static_assert</code> 要求下标是静态的，就是为了在编译期确定这个偏移，有利于编译器生成直接的寄存器访问（§2 开头）。第 126 行的 <code>operator()</code> 是对应的可写版本。</p>
 </div>
 <p>其余三个函数的签名也值得看一眼：</p>
 <ul>
