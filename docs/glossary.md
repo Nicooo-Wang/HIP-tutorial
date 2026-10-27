@@ -117,6 +117,7 @@
 | 寄存器分块 | 让每个线程负责多个输出元素，在寄存器里复用已读入的数据，进一步提高计算强度。 | Lab 1 §5.4 |
 | `__launch_bounds__` | 写在 kernel 前、告诉编译器 block 最多有多少线程的属性，编译器据此估算资源和占用率。 | Lab 1 §5.4（折叠框） |
 | 循环展开 | 编译器把循环体按次数复制多份，每份里的循环变量换成常数。`#pragma unroll` 可以明确要求展开。 | Lab 1 §5.4 |
+| LLVM IR | 编译器的中间表示，介于源码和 GPU 汇编之间。`--save-temps` 留下的 `.bc` 文件就是它，用 `llvm-dis` 可以转成文本。 | Lab 2 §2.3 |
 
 ## 数值
 
@@ -150,6 +151,8 @@
 | 泛型 lambda | 参数类型写成 `auto` 的 lambda，编译器为每种实参类型生成一个版本。 | Lab 2 §2.6 |
 | `decltype` | 取变量或表达式的类型。CK-Tile 里常用它从参数类型中取出编译期常数。 | Lab 2 §2.6 |
 | tag dispatch | 用参数的类型（如 `number<I>`）而不是运行期的值来选择调用哪个重载。 | Lab 2 §2.5 |
+| `enable_if` | 写在模板参数里的条件：条件不成立时，这个函数版本对编译器来说“不存在”，调用时会报找不到匹配的函数。 | Lab 2 §3.1 |
+| 特化 | 为某组特定的模板参数另写一份实现。例如 `static_for<0, N, 1>` 有一个专门的版本，比一般情形更简单。 | Lab 2 §2.3 |
 
 ## CK-Tile
 
@@ -164,6 +167,7 @@
 | `tuple` | `ck_tile::tuple`，可以装不同类型的值，只能用 `number<I>` 作下标（`t[number<I>{}]` 或 `t.at(number<I>{})`）。 | Lab 2 §2.5 |
 | stride | 沿某一维前进一个元素时，内存偏移增加多少个元素。 | Lab 2 §2.2 |
 | tensor view | 一块有形状的内存：指针、各维长度和 stride、地址空间。 | Lab 2 §3.1 |
+| buffer view | tensor view 里负责真正读写的部分：指针 + 底层存储的跨度。一维连续数组的跨度就是元素个数；带行间距的二维视图跨度是 (rows − 1) × ld + cols。 | Lab 2 §3.1 |
 | `address_space_enum` | 标明 tensor view 的数据在哪里：`global` 是显存，`lds` 是 LDS。 | Lab 2 §3.1 |
 | `make_naive_tensor_view` | 用长度和 stride 创建 tensor view。可选地承诺向量长度；不写时 CK-Tile 不会自己推导，只能逐元素访问。 | Lab 2 §3.1 |
 | buffer 指令 | AMD GPU 的一类显存访问指令，带一个字节范围（range），越界的读返回 0、越界的写被丢弃。检查粒度是 4 字节，小于 4 字节的类型在末尾可能误伤合法元素。 | Lab 2 §3.1 |
@@ -178,12 +182,14 @@
 | `make_static_tile_distribution` | 从 `tile_distribution_encoding` 生成 tile distribution 对象。 | Lab 2 §3.4 |
 | tile window | tensor view 上的一块矩形区域，由原点和长度确定，可以带一个 tile distribution。 | Lab 2 §3.3 |
 | `make_tile_window` | 在 tensor view 上创建 tile window，指定长度、原点和分布。 | Lab 2 §3.3 |
+| `multi_index` | `ck_tile::array<index_t, 维数>` 的别名，一个定长的坐标数组，例如 tile window 的原点。 | Lab 2 §3.3 |
 | distributed tensor | 一个 tile 分散在所有线程寄存器里的表示，每个线程持有自己的 Y 段。类型是 `static_distributed_tensor`。 | Lab 2 §3.4 |
+| thread buffer | distributed tensor 里每个线程自己的那份寄存器数组，长度等于所有 Y 维长度之积。 | Lab 2 §3.4 |
 | `load_tile` | 按 tile window 的分布从显存读数据到寄存器，返回 distributed tensor。 | Lab 2 §3.4 |
 | `store_tile` | 把 distributed tensor 按 tile window 的分布写回显存。 | Lab 2 §3.4 |
 | `sweep_tile` | 对本线程持有的每个元素调用一次 lambda，下标在编译期展开。 | Lab 2 §3.4 |
-| `make_static_distributed_tensor` | 按给定分布创建一个未初始化的 distributed tensor，通常用来装输出。 | Lab 2 §3.4 |
-| ScalarPerVector | CK-Tile 编译期算出的每次访存搬几个元素，由 Y 段的连续长度和视图承诺的向量长度共同决定。 | Lab 2 §4.2 |
+| `make_static_distributed_tensor` | 按给定分布创建一个 distributed tensor，通常用来装输出；本机 CK-Tile 默认把元素初始化为 0。 | Lab 2 §3.4 |
+| ScalarPerVector | CK-Tile 编译期算出的每次访存搬几个元素，由 Y 段的连续长度和视图承诺的向量长度共同决定。 | Lab 2 §3.1（折叠框），§4.2 |
 | layout | 一串坐标变换拼成的对象，把逻辑坐标翻译成内存里的线性偏移。 | Lab 3 §1 |
 | 上层维度 | 描述符最外层的逻辑坐标维度，例如矩阵的 (i, j)。 | Lab 3 §1.1 |
 | 下层维度 | 某个坐标变换输出给下一层的维度。 | Lab 3 §1.1 |

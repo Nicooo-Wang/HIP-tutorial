@@ -33,23 +33,24 @@ table.facts td.nw { white-space: nowrap; }
 <header class="doc-header">
   <p class="doc-kicker">Lab 2 · C++ 速成 + CK-Tile 入门</p>
   <h1>读懂 CK-Tile：从 C++ 编译期编程到第一个 tile kernel</h1>
-  <p class="doc-lede">Lab 1 里，每个 kernel 的第一行几乎都是你亲手推出来的下标公式：<code>i = blockIdx.x * blockDim.x + threadIdx.x</code>，然后是 <code>if (i &lt; n)</code>。这一课换一种写法：不再<em>计算</em>每个线程该碰哪个元素，而是用类型<em>描述</em>“一块数据怎样分给一组线程”，让 CK-Tile 去生成下标、向量化访存和边界处理。为了读懂这种写法，先补一段 C++ 编译期编程，再写第一个 CK-Tile kernel。</p>
+  <p class="doc-lede">Lab 1 里，每个 kernel 的第一行几乎都是你亲手推出来的下标公式 <code>i = blockIdx.x * blockDim.x + threadIdx.x</code>，然后是 <code>if (i &lt; n)</code>。这一课换一种写法：不再<em>计算</em>每个线程该碰哪个元素，而是用类型<em>描述</em>“一块数据怎样分给一组线程”，再让 CK-Tile 生成下标、向量化访存和边界处理。为了读懂这种写法，先补一段 C++ 编译期编程，再写第一个 CK-Tile kernel。</p>
   <p class="doc-meta">预计阅读 80 分钟 · 对应 Assignment a1、a2 · 前置：<a href="../lab1-hip-basics/tutorial.html">Lab 1 讲义</a></p>
 </header>
 
 <!-- ============================================================ §1 -->
 <h2 id="s1"><span class="sec">§1</span>为什么需要 CK-Tile</h2>
-<p>CK-Tile 是 AMD Composable Kernel（CK）库的新一代“tile 编程”接口，随 ROCm 安装在 <code>/opt/rocm/include/ck_tile</code>（本机 ROCm 7.2.0）。它是纯头文件库：没有 <code>.so</code> 要链接，<code>#include "ck_tile/core.hpp"</code> 就能用，所有名字都在命名空间 <code>ck_tile</code> 里。AMD 官方的 GEMM、FlashAttention（fmha）、MoE 等高性能 kernel 都用它写成。这一节先说清楚它要解决什么问题，再给一张源码地图。</p>
+<p>CK-Tile 是 AMD Composable Kernel（CK）库里新一代的“tile 编程”接口，随 ROCm 安装在 <code>/opt/rocm/include/ck_tile</code>（本机 ROCm 7.2.0）。它是纯头文件库：没有 <code>.so</code> 要链接，<code>#include "ck_tile/core.hpp"</code> 就能用，所有名字都在命名空间 <code>ck_tile</code> 里。AMD 官方的 GEMM、FlashAttention（fmha）、MoE 等高性能 kernel 都用它写成。这一节先说清楚它要解决什么问题，再给一张源码地图。</p>
 
 <h3 id="s1-1"><span class="sec">§1.1</span>手写 kernel 的四个痛点</h3>
-<p>回头看 Lab 1 的四个 Assignment：每一个都在回答同一个问题——<strong>哪个线程负责哪些数据</strong>——而答案都写成了散落在 kernel 各处的整数运算。问题规模一大，这种写法会在四个地方同时变难：</p>
+<p>回头看 Lab 1 的四个 Assignment：每一个都在回答同一个问题，<strong>哪个线程负责哪些数据</strong>；答案都写成了散落在 kernel 各处的整数运算。问题规模一大，这种写法会在四个地方同时变难：</p>
 <ol>
-  <li><strong>下标。</strong>向量加法只有一层映射（全局线程号 → 元素）；转置多了一层“tile 内坐标”；分块 GEMM 有 block → wavefront → 线程 → 每线程多个输出四层。每一层都要手推公式，任何一处写错，结果就错一片。</li>
-  <li><strong>向量化。</strong>想让一条指令搬 16 字节，就得自己转成 <code>float4</code>、保证对齐、再为“最后不满 4 个”的尾部单独写一段（见下面的片段）。</li>
-  <li><strong>LDS 布局。</strong><a href="../lab1-hip-basics/tutorial.html#s3-6">Lab 1 §3.6</a> 为了避开 bank conflict 加了 padding。换一种 padding 或 swizzle，所有读写 LDS 的下标都要跟着改。</li>
-  <li><strong>MFMA 布局。</strong>Lab 4 要用的矩阵指令（MFMA）规定了 A、B、C 小块在 64 个 lane 的寄存器里怎么摆，是一张需要查表的映射。手写时，从显存到 LDS 再到寄存器的每一步都要与它对齐。</li>
+  <li><strong>下标。</strong>向量加法只有一层映射（全局线程号 → 元素）；转置多了一层“tile 内坐标”；分块 GEMM 有 block → wavefront → 线程 → 每线程多个输出四层（每线程多个输出就是 Lab 1 §5.4 的寄存器分块，例如每线程 4 × 4 个）。每一层都要手推公式，任何一处写错，结果就错一片。</li>
+  <li><strong>向量化。</strong>想让一条指令搬 16 字节，就得自己转成 <code>float4</code>、保证对齐，再为“最后不满 4 个”的尾部单独写一段（见下面的片段）。</li>
+  <li><strong>LDS 布局。</strong><a href="../lab1-hip-basics/tutorial.html#s3-6">Lab 1 §3.6</a> 为了避开 bank conflict 加了 padding。换一种 padding，所有读写 LDS 的下标都要跟着改。</li>
+  <li><strong>MFMA 布局。</strong>Lab 4 要用的矩阵指令（MFMA）规定了 A、B、C 小块在 64 个 lane 的寄存器里怎么摆，这是一张需要查表的映射。手写时，从显存到 LDS 再到寄存器的每一步都要与它对齐。</li>
 </ol>
 <pre data-snip="s1_1"><code class="language-cpp">// 手写向量化拷贝：每个线程拷贝 4 个连续 float；n 不是 4 的倍数时，尾部要单独处理
+// 前提：src、dst 各有 n 个 float，起始地址都按 16 字节对齐，且两块内存互不重叠
 __global__ void copy4(const float* __restrict__ src, float* __restrict__ dst, int n) {
   int i = (blockIdx.x * blockDim.x + threadIdx.x) * 4;     // 本线程 4 个元素的起点
   if (i + 3 &lt; n) {                                          // 4 个都在范围内：一条 16 字节访存
@@ -58,9 +59,10 @@ __global__ void copy4(const float* __restrict__ src, float* __restrict__ dst, in
     for (int k = i; k &lt; n; ++k) dst[k] = src[k];
   }
 }</code></pre>
-<p>这还只是一维拷贝。CK-Tile 的思路是把“数据怎样分给线程”从运算里抽出来，写成一个<strong>类型</strong>（tile distribution，§3.2）。有了这个类型，同一套 <code>load_tile</code> / <code>store_tile</code> 就能自动生成每个线程的地址、选择向量指令宽度、处理越界——上面这段 <code>if</code>/<code>else</code> 在 CK-Tile 里一行都不用写（§3.4 的例子会生成与它等价的 16 字节访存）。</p>
+<p>这还只是一维拷贝。注意 <code>float4</code> 访问要求地址按 16 字节对齐：i 是 4 的倍数，只能保持基指针原有的对齐，不能修正一个本来没对齐的基指针。</p>
+<p>CK-Tile 的思路是把“数据怎样分给线程”从运算里抽出来，写成一个<strong>类型</strong>（tile distribution，§3.2）。有了这个类型，同一套 <code>load_tile</code> / <code>store_tile</code> 就能自动生成每个线程的地址、选择向量指令的宽度、处理越界。上面那段 <code>if</code>/<code>else</code> 分支和类型转换，在 CK-Tile 里不用手写；§3.4 的例子会生成与它等价的 16 字节访存。</p>
 <div class="callout note" data-title="为什么是“类型”">
-  <p>类型在编译期就完全确定。把布局写进类型，编译器就能在编译期算出每个线程的寄存器怎样排、循环展开成几条指令、哪些检查可以省掉——运行时只剩真正必要的地址加法。代价是：你得能读懂“用类型做计算”的 C++。这正是 §2 要补的课。</p>
+  <p>类型在编译期就完全确定。把布局写进类型，编译器就能在编译期算出每个线程的寄存器怎样排、循环展开成几条指令、哪些检查可以省掉，运行时只剩真正必要的地址运算。前提是你得能读懂“用类型做计算”的 C++，这正是 §2 要补的课。</p>
 </div>
 
 <h3 id="s1-2"><span class="sec">§1.2</span>CK-Tile 的分层</h3>
@@ -97,7 +99,7 @@ __global__ void copy4(const float* __restrict__ src, float* __restrict__ dst, in
     <path d="M473 282 V266" stroke="var(--d-muted)" stroke-width="1.5" fill="none" marker-end="url(#arr11)"/>
     <defs><marker id="arr11" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--d-muted)"/></marker></defs>
   </svg>
-  <figcaption><b>图 1.1</b>箭头表示“建在……之上”。a1 练的是紫色那层的工具，a2 用的是蓝色那层的四件套。</figcaption>
+  <figcaption><b>图 1.1</b>箭头表示“建在……之上”。a1 练的是 <code>core/container · numeric · utility</code> 那层的工具，a2 用的是 <code>core/tensor</code> 那层的四件套。</figcaption>
 </figure>
 <p>另外几个目录本课不用：<code>host/</code> 是主机端辅助（主机张量、计时器、kernel 启动封装），<code>ref/</code> 是参考实现，<code>utility/</code> 目前只有一个 <code>json_dump.hpp</code>。我们的测试沿用 Lab 0–1 的 <code>harness.hpp</code>，kernel 也像 Lab 1 一样用 <code>&lt;&lt;&lt;…&gt;&gt;&gt;</code> 启动。</p>
 
@@ -131,12 +133,21 @@ __global__ void copy4(const float* __restrict__ src, float* __restrict__ dst, in
 
 <!-- ============================================================ §2 -->
 <h2 id="s2"><span class="sec">§2</span>C++ 速成：读懂 CK-Tile 需要的编译期编程</h2>
-<p>打开任何一个 CK-Tile 头文件，你会看到满屏的 <code>template</code>、<code>number&lt;…&gt;{}</code>、<code>static_for</code>、<code>if constexpr</code> 和 <code>[&amp;](auto i) {…}</code>。它们服务于同一个目的：<strong>让尽可能多的计算发生在编译期</strong>。在 GPU 上这不只是“快一点”，而是关系到数据能不能留在寄存器里：</p>
+<p>打开任何一个 CK-Tile 头文件，你会看到满屏的 <code>template</code>、<code>number&lt;…&gt;{}</code>、<code>static_for</code>、<code>if constexpr</code> 和 <code>[&amp;](auto i) {…}</code>。它们服务于同一个目的：<strong>让尽可能多的计算发生在编译期</strong>。在 GPU 上这不只是“快一点”，还关系到数据能不能留在寄存器里：</p>
 <ul>
-  <li>寄存器没有“地址”，<strong>寄存器数组只能用编译期已知的下标访问</strong>。下标是运行期变量时，编译器只能退而求其次：本机实测，一个 8 个 float 的数组用运行期下标读一次，编译出 7 条 <code>v_cndmask</code>（逐个比较、挑选）；64 个 float 的数组则整个被搬进 272 字节的 scratch（每线程私有、但在显存里，很慢）。用编译期下标，两种情况都只是一次寄存器读。</li>
+  <li><strong>下标在编译期已知，编译器才能把数组的每个元素固定放在一个寄存器里。</strong>下标要到运行期才知道时，编译器只能另想办法：用一串条件选择指令挑出要的元素，或者把整个数组放进 scratch（每线程私有、在显存里，很慢）。数组越大，越可能是后者。用编译期下标，读一个元素就只是一次寄存器读。</li>
   <li>tile 的大小、每个线程负责几个元素、循环几次，都在编译期确定，编译器就能把循环完全展开，把多次标量访存合并成一条向量指令。</li>
   <li>布局写错了（比如分块大小不整除），可以用 <code>static_assert</code> 在编译期就报出来，而不是跑出一堆错数。</li>
 </ul>
+<details class="deep"><summary>本机实测：用运行期下标读寄存器数组，编译器生成了什么</summary>
+  <p>三个小 kernel，每个线程先把数据读进局部数组 <code>float r[N]</code>，再按下标取一个元素写出去（<code>hipcc -O2 --offload-arch=gfx942</code>，看 <code>--save-temps</code> 的汇编和 <code>-Rpass-analysis=kernel-resource-usage</code> 的报告）：</p>
+  <ul>
+    <li>N = 8，下标是 kernel 参数：生成 7 条 <code>v_cndmask</code>（条件选择指令）。编译器不知道要读第几个，只能把 8 个值都留在寄存器里，再做 7 次“二选一”挑出要的那个。scratch 为 0。</li>
+    <li>N = 64，下标是 kernel 参数：整个数组被放进 scratch，每线程 272 字节，读写都变成显存访问。</li>
+    <li>N = 8，下标是常数 5：就是一次寄存器读，没有任何选择指令。</li>
+  </ul>
+  <p>gfx942 的硬件也有按运行期下标访问寄存器的指令（<code>s_set_gpr_idx_on</code> 等），这几个例子里编译器都没用。选哪种做法由编译器根据代码决定，所以写 CK-Tile 风格的代码时，干脆让下标在编译期确定。</p>
+</details>
 <figure class="diagram">
   <svg viewBox="0 0 640 220" role="img" aria-labelledby="fig20-t">
     <title id="fig20-t">编译期世界与运行期世界：类型与模板参数在编译期确定，变量的值在运行期才知道</title>
@@ -158,19 +169,19 @@ __global__ void copy4(const float* __restrict__ src, float* __restrict__ dst, in
       <text x="342" y="190" style="fill:var(--d-muted)">→ 只能参与运行期运算</text>
     </g>
   </svg>
-  <figcaption><b>图 2.1</b>本节的所有技巧，都是在想办法把左边的信息“带着走”：放进类型、放进模板参数，让它跨过函数调用依然是编译期常量。</figcaption>
+  <figcaption><b>图 2.1</b>左边的量能当数组长度、模板参数和寄存器下标；右边的量只能参与运行期运算。本节的所有技巧，都是在想办法把左边的信息“带着走”：放进类型、放进模板参数，让它跨过函数调用依然是编译期常量。</figcaption>
 </figure>
-<p>下面六小节各对应 a1 的一道练习（E1–E6）。每节先讲规则，再给一个<em>别的问题</em>上的同类例子，最后摘一段 CK-Tile 的真实源码，让你确认“这正是它天天在用的写法”。本节所有代码片段都在本机用 <code>hipcc -std=c++20</code> 编译通过，其中 kernel 在 GPU 上实际运行过。片段里的 <code>index_t</code> 是 <code>ck_tile::index_t</code>（即 <code>int32_t</code>）。</p>
+<p>下面六小节各对应 a1 的一道练习（E1–E6）。每节先讲规则，再给一个<em>别的问题</em>上的同类例子，最后摘一段 CK-Tile 的真实源码，让你确认这正是它天天在用的写法。本节所有代码片段都在本机用 <code>hipcc -std=c++20</code> 编译通过，其中的 kernel 在 GPU 上实际运行过。片段里的 <code>index_t</code> 是 <code>ck_tile::index_t</code>，即 <code>int32_t</code>。</p>
 
 <h3 id="s2-1"><span class="sec">§2.1</span>constexpr 与折叠表达式</h3>
-<p><strong>constexpr 函数</strong>是“参数都是常量时，可以在编译期求值”的函数。它同时也是普通函数——传运行期的值进去，就在运行期算。<code>static_assert(条件)</code> 要求条件是编译期常量，否则编译失败；它是检验“这件事是不是在编译期发生”的最好工具。</p>
+<p><strong>constexpr 函数</strong>是“参数都是常量时，可以在编译期求值”的函数。它同时也是普通函数：传运行期的值进去，就在运行期算。<code>static_assert(条件)</code> 要求条件是编译期常量，否则编译失败；它是检验“这件事是不是在编译期发生”的最好工具。</p>
 <pre data-snip="s2_1c"><code class="language-cpp">constexpr index_t ceil_div(index_t a, index_t b) { return (a + b - 1) / b; }
 
 static_assert(ceil_div(1000, 256) == 4);        // 编译期就算出来并检查
 constexpr index_t kBlocks = ceil_div(4096, 256);
 float tmp[kBlocks];                             // 结果是编译期常量，可以当数组长度
 int at_runtime(int n) { return ceil_div(n, 256); }   // 同一个函数，运行期也能用</code></pre>
-<p><strong>参数包（parameter pack）。</strong><code>template &lt;index_t... Is&gt;</code> 声明了“任意多个 <code>index_t</code> 模板参数”，合起来叫 <code>Is</code>。CK-Tile 的 <code>sequence&lt;Is...&gt;</code> 就是一个什么数据都不存的空结构体，它的全部信息都在模板参数里——一串编译期整数。把 <code>sequence&lt;2, 3, 4&gt;{}</code>（一个空对象）传给形参类型为 <code>sequence&lt;Is...&gt;</code> 的函数，编译器就推导出 <code>Is</code> = 2, 3, 4。</p>
+<p><strong>参数包（parameter pack）。</strong><code>template &lt;index_t... Is&gt;</code> 声明了“任意多个 <code>index_t</code> 模板参数”，合起来叫 <code>Is</code>。CK-Tile 的 <code>sequence&lt;Is...&gt;</code> 是一个什么数据都不存的空结构体，它的全部信息都在模板参数里：一串编译期整数。把 <code>sequence&lt;2, 3, 4&gt;{}</code>（一个空对象）传给形参类型为 <code>sequence&lt;Is...&gt;</code> 的函数，编译器就推导出 <code>Is</code> = 2, 3, 4。</p>
 <p>包不能直接下标访问，只能<strong>展开</strong>：在某个表达式模式后面写 <code>...</code>，这个模式就对包里的每个元素复制一份，用逗号隔开。<code>sizeof...(Is)</code> 则给出包里有几个元素。</p>
 <pre data-snip="s2_1a"><code class="language-cpp">template &lt;index_t... Is&gt;
 constexpr index_t count(sequence&lt;Is...&gt;) {
@@ -197,7 +208,7 @@ static_assert(first_or_minus1(sequence&lt;&gt;{}) == -1);   // 空包：数组�
   </tbody>
 </table>
 </div>
-<p>“包”的位置也可以是一个含包的表达式，比如 <code>(Is &gt; 0)</code> 或 <code>(Is % 2 == 0 ? 1 : 0)</code>——展开时这个表达式对每个元素各算一次：</p>
+<p>“包”的位置也可以是一个含包的表达式，比如 <code>(Is &gt; 0)</code> 或 <code>(Is % 2 == 0 ? 1 : 0)</code>。展开时，这个表达式对每个元素各算一次：</p>
 <pre data-snip="s2_1b"><code class="language-cpp">template &lt;index_t... Is&gt;
 constexpr bool all_positive(sequence&lt;Is...&gt;) {
   return (true &amp;&amp; ... &amp;&amp; (Is &gt; 0));     // 二元左折叠，初值 true
@@ -211,7 +222,8 @@ static_assert(!all_positive(sequence&lt;3, 0, 4&gt;{}));
 static_assert(all_positive(sequence&lt;&gt;{}));             // 空包：结果是初值 true
 static_assert(count_even(sequence&lt;3, 2, 8, 5&gt;{}) == 2);
 static_assert(count_even(sequence&lt;&gt;{}) == 0);          // 空包：结果是初值 0</code></pre>
-<p>初值该取什么？它必须是这个运算的<strong>单位元</strong>——和任何数运算后都不改变那个数的值（加法是 0，逻辑与是 true）。这样有元素时它不影响结果，没有元素时它自己就是正确答案。如果省掉初值写成一元折叠，空包会直接编译失败：</p>
+<p>初值取什么？通常取这个运算的<strong>单位元</strong>，也就是和任何数运算后都不改变那个数的值：加法是 0，乘法是 1，逻辑与是 true。这样有元素时它不影响结果，没有元素时它自己就是正确答案。语法本身允许任何合法的初值，空包时折叠的结果就是这个初值。</p>
+<p>如果省掉初值写成一元折叠，加法、乘法这类运算遇到空包会直接编译失败（<code>&amp;&amp;</code>、<code>||</code> 和逗号是例外，见上表）：</p>
 <pre><code class="language-bash">error: unary fold expression has empty expansion for operator '+' with no fallback value</code></pre>
 <div class="callout note" data-title="读源码：core/container/sequence.hpp 第 700–704 行">
 <pre><code class="language-cpp">template &lt;index_t... Xs, index_t... Ys&gt;
@@ -219,13 +231,13 @@ CK_TILE_HOST_DEVICE constexpr bool operator==(sequence&lt;Xs...&gt;, sequence&lt
 {
     return ((Xs == Ys) &amp;&amp; ...);
 }</code></pre>
-  <p>两个 sequence 相等的判断：<code>(Xs == Ys)</code> 里同时出现了两个包，它们按位置<em>同步</em>展开成 <code>(X0 == Y0) &amp;&amp; (X1 == Y1) &amp;&amp; …</code>（两个包长度必须相同）。空 sequence 比较时，<code>&amp;&amp;</code> 的一元折叠给出 true。§2.3 的 <code>static_for</code>（最常用的 <code>static_for&lt;0, N, 1&gt;</code> 那个特化）内部则用到了逗号折叠（<code>core/utility/functional.hpp</code> 第 70 行）。</p>
+  <p>两个 sequence 相等的判断：<code>(Xs == Ys)</code> 里同时出现了两个包，它们按位置<em>同步</em>展开成 <code>(X0 == Y0) &amp;&amp; (X1 == Y1) &amp;&amp; …</code>，所以两个包的长度必须相同。空 sequence 比较时，<code>&amp;&amp;</code> 的一元折叠给出 true。§2.3 的 <code>static_for</code> 内部则用到了逗号折叠（<code>core/utility/functional.hpp</code> 第 70 行）。</p>
 </div>
 <p class="sec-assign">对应 a1 的 E1（<code>product</code>）。</p>
 
 <h3 id="s2-2"><span class="sec">§2.2</span>array 与编译期计算</h3>
 <p>包适合“对每个元素做同一件事”，但不适合“从后往前走、边走边累积”这类需要下标和循环的计算。这时的标准做法是：<strong>先把包展开进一个数组，再在 constexpr 函数里像写普通 C++ 一样用循环</strong>。C++14 起，constexpr 函数里可以有局部变量、<code>for</code> 循环和 <code>if</code>，只要最终能在编译期算完。</p>
-<p>返回值用 <code>ck_tile::array&lt;T, N&gt;</code>：一个定长数组，和 <code>std::array</code> 类似，但可以在 host 和 device 两边使用。它有两种下标写法——CK-Tile 的习惯是 <code>a(i)</code> 用来<strong>写</strong>、<code>a[i]</code> 用来<strong>读</strong>：</p>
+<p>返回值用 <code>ck_tile::array&lt;T, N&gt;</code>：一个定长数组，和 <code>std::array</code> 类似，但 host 和 device 两边都能用。它有两种下标写法，CK-Tile 的习惯是 <code>a(i)</code> 用来<strong>写</strong>、<code>a[i]</code> 用来<strong>读</strong>：</p>
 <pre data-snip="s2_2a"><code class="language-cpp">constexpr auto make_squares() {
   ck_tile::array&lt;index_t, 4&gt; a{};      // {} 把 4 个元素都初始化为 0
   for (index_t i = 0; i &lt; 4; ++i)
@@ -235,8 +247,8 @@ CK_TILE_HOST_DEVICE constexpr bool operator==(sequence&lt;Xs...&gt;, sequence&lt
 constexpr auto sq = make_squares();
 static_assert(sq[3] == 9);             // 读：a[i]
 static_assert(sq.size() == 4);</code></pre>
-<p>下面是一个完整的“包 → 数组 → 循环”例子：给定结构体各字段的字节数，算出每个字段的起始偏移（每个字段前面所有字段大小之和，即“排他前缀和”）。注意三个步骤：</p>
-<pre data-snip="s2_2b"><code class="language-cpp">// 字段大小 &lt;4, 2, 8, 4&gt; → 偏移 {0, 4, 6, 14}
+<p>下面是一个完整的“包 → 数组 → 循环”例子：若干数据段按给定的字节数首尾相接地连续存放，中间不插入任何填充，算出每段的起始偏移。每段的偏移就是前面所有段大小之和，也叫“排他前缀和”。注意三个步骤：</p>
+<pre data-snip="s2_2b"><code class="language-cpp">// 各段大小 &lt;4, 2, 8, 4&gt; → 偏移 {0, 4, 6, 14}
 template &lt;index_t... Sizes&gt;
 constexpr auto field_offsets(sequence&lt;Sizes...&gt;) {
   constexpr index_t N = sizeof...(Sizes);
@@ -252,15 +264,20 @@ constexpr auto field_offsets(sequence&lt;Sizes...&gt;) {
 constexpr auto off = field_offsets(sequence&lt;4, 2, 8, 4&gt;{});
 static_assert(off[0] == 0 &amp;&amp; off[1] == 4 &amp;&amp; off[2] == 6 &amp;&amp; off[3] == 14);
 static_assert(std::is_same_v&lt;decltype(off), const ck_tile::array&lt;index_t, 4&gt;&gt;);</code></pre>
+<details class="deep"><summary>真实的 C++ 结构体不是这样排的</summary>
+  <p>上面的例子假定各段紧挨着、没有填充。真实的 C++ 结构体还要满足每个字段的对齐要求，编译器会在字段之间插入填充。例如 <code>struct S { int32_t a; int16_t b; double c; int32_t d; };</code>，字段大小同样是 4、2、8、4，但 <code>offsetof</code> 给出的偏移是 0、4、8、16：<code>double</code> 要 8 字节对齐，<code>b</code> 后面空了 2 字节。要知道真实结构体的字段偏移，用 <code>offsetof</code> 查。</p>
+</details>
 <div class="callout warn" data-title="ck_tile::array 与 std::array 的一个区别">
   <p>初值列表比数组短时，<code>std::array</code> 把剩下的元素补 0，而 <code>ck_tile::array</code> <strong>用最后一个值补齐</strong>：<code>ck_tile::array&lt;index_t, 4&gt;{1, 2}</code> 是 {1, 2, 2, 2}（见 <code>core/container/array.hpp</code> 第 53–73 行的构造函数和注释 “behavior different from std”）。想要全 0，就写空的 <code>{}</code>，它调用第 52 行的默认构造函数。</p>
 </div>
 <div class="callout pitfall">
-  <p>倒着走的循环 <code>for (i = N - 1; i &gt;= 0; --i)</code> 一定要用<strong>有符号</strong>的下标类型（<code>index_t</code> 就是有符号的 <code>int32_t</code>）。如果写成 <code>size_t</code> 或 <code>unsigned</code>，<code>i &gt;= 0</code> 永远为真，0 再减 1 会绕回一个巨大的数。在 constexpr 求值里这是越界访问，编译器会直接拒绝。本机实测，像 E2 这样的函数模板，错误报在调用处：<code>constexpr variable 's' must be initialized by a constant expression</code>（变量名是你调用处的那个变量），下一行附注 <code>cannot refer to element 18446744073709551615 of array of 3 elements in a constant expression</code>。如果下标在用之前先被转成了 <code>index_t</code>，附注里的数字会是 <code>-1</code>。看到这种巨大的数或 -1，就去检查倒序循环的下标类型。</p>
+  <p>倒着走的循环 <code>for (i = N - 1; i &gt;= 0; --i)</code> 一定要用<strong>有符号</strong>的下标类型（<code>index_t</code> 就是有符号的 <code>int32_t</code>）。如果写成 <code>size_t</code> 或 <code>unsigned</code>，<code>i &gt;= 0</code> 永远为真，0 再减 1 会绕回一个巨大的数。在 constexpr 求值里这是越界访问，编译器会直接拒绝。</p>
+  <p>本机实测，像 E2 这样的函数模板，错误报在调用处：<code>constexpr variable 's' must be initialized by a constant expression</code>（变量名是你调用处的那个变量），下一行附注 <code>cannot refer to element 18446744073709551615 of array of 3 elements in a constant expression</code>。如果下标在用之前先被转成了 <code>index_t</code>，附注里的数字会是 <code>-1</code>。看到这种巨大的数或 -1，就去检查倒序循环的下标类型。</p>
 </div>
 <p><strong>stride 是什么。</strong>多维张量在内存里终究是一维的。一个 D 维张量的元素 (i<sub>0</sub>, i<sub>1</sub>, …) 在内存中的偏移是</p>
 <p class="formula">offset = i<sub>0</sub> × stride<sub>0</sub> + i<sub>1</sub> × stride<sub>1</sub> + … <span class="c">// stride_k：第 k 维坐标加 1 时，偏移加多少</span></p>
-<p>你在 <a href="../lab1-hip-basics/tutorial.html#s3-2">Lab 1 §3.2</a> 已经用过二维的情形：rows × cols 的行主序矩阵，(r, c) 的偏移是 <code>r × cols + c</code>，也就是 strides = (cols, 1)。<strong>行主序</strong>的意思是最后一维变化最快（stride 为 1）；<strong>紧密排列（packed）</strong>的意思是元素之间没有空隙。如果这个矩阵是另一个更宽的矩阵（每行 ld 个元素）中的一块，它就不紧密了，strides 是 (ld, 1)。§3.1 的 <code>make_naive_tensor_view</code> 正是用“各维长度 + 各维 stride”来描述一块内存的；一维连续数组的 strides 就是 (1)。三维及以上的紧密行主序 stride 怎么算，就是 a1 E2 要你写的。</p>
+<p>你在 <a href="../lab1-hip-basics/tutorial.html#s3-2">Lab 1 §3.2</a> 已经用过二维的情形：rows × cols 的行主序矩阵，(r, c) 的偏移是 <code>r × cols + c</code>，也就是 strides = (cols, 1)。<strong>行主序</strong>的意思是最后一维变化最快（stride 为 1）；<strong>紧密排列（packed）</strong>的意思是元素之间没有空隙。如果这个矩阵是另一个更宽的矩阵（每行 ld 个元素）中的一块，它就不紧密了，strides 是 (ld, 1)。</p>
+<p>§3.1 的 <code>make_naive_tensor_view</code> 正是用“各维长度 + 各维 stride”来描述一块内存的；一维连续数组的 strides 就是 (1)。三维及以上的紧密行主序 stride 怎么算，就是 a1 E2 要你写的。</p>
 <div class="callout note" data-title="读源码：core/container/sequence.hpp 第 70–75 行">
 <pre><code class="language-cpp">CK_TILE_HOST_DEVICE static constexpr index_t at(index_t I)
 {
@@ -268,12 +285,13 @@ static_assert(std::is_same_v&lt;decltype(off), const ck_tile::array&lt;index_t, 
     const index_t mData[size() + 1] = {Is..., 0};
     return mData[I];
 }</code></pre>
-  <p><code>sequence</code> 用运行期下标取元素的方法，正是“包 → 数组”：展开进局部数组再下标。末尾多放一个 0，是为了空包时数组长度不为 0（C++ 不允许长度为 0 的数组）。另见 <code>core/container/array.hpp</code> 第 117–119 行：<code>operator[]</code> 和 <code>operator()</code> 都返回元素的引用，后者旁边的注释 “TODO: compatible” 说明它是为兼容旧写法保留的——CK-Tile 内部大量用 <code>a(i) = …</code> 写数组，例如 <code>core/tensor/tile_distribution.hpp</code> 第 301 行的 <code>rh_major_minor_to_hidden_ids(0)(i) = hidden_dim_cnt;</code>（数组的数组，连续两次下标）。</p>
+  <p><code>sequence</code> 用运行期下标取元素的方法，正是“包 → 数组”：展开进局部数组再下标。末尾多放一个 0，是为了空包时数组长度不为 0（C++ 不允许长度为 0 的数组）。</p>
+  <p>另见 <code>core/container/array.hpp</code> 第 117–119 行：<code>operator[]</code> 和 <code>operator()</code> 都返回元素的引用，后者旁边的注释 “TODO: compatible” 说明它是为兼容旧写法保留的。CK-Tile 内部大量用 <code>a(i) = …</code> 写数组，例如 <code>core/tensor/tile_distribution.hpp</code> 第 301 行的 <code>rh_major_minor_to_hidden_ids(0)(i) = hidden_dim_cnt;</code>（数组的数组，连续两次下标）。</p>
 </div>
 <p class="sec-assign">对应 a1 的 E2（<code>row_major_strides</code>）。</p>
 
 <h3 id="s2-3"><span class="sec">§2.3</span><code>number&lt;N&gt;</code> 与 <code>static_for</code></h3>
-<p>一个关键限制：<strong>函数参数永远不是常量表达式</strong>。哪怕调用时传的是字面量 4，函数体内的形参 <code>n</code> 也不能当数组长度或模板参数。但参数的<em>类型</em>是编译期确定的。于是 CK-Tile 把数“放进类型里”：</p>
+<p>一个关键限制：<strong>函数参数永远不是常量表达式</strong>。哪怕调用时传的是字面量 4，函数体内的形参 <code>n</code> 也不能当数组长度或模板参数。但参数的<em>类型</em>是编译期确定的，于是 CK-Tile 把数“放进类型里”：</p>
 <div class="callout note" data-title="读源码：core/numeric/integral_constant.hpp 第 11–20、36–37 行">
 <pre><code class="language-cpp">template &lt;auto v&gt;
 struct constant
@@ -299,12 +317,12 @@ static_assert(sizeof(four) == 1);            // 空对象：运行时不携带�
 <p>所以有两种“用法”要分清：</p>
 <ul>
   <li><strong>当整数用</strong>：<code>out[k]</code>、<code>base + k</code>、<code>2 * k</code>。<code>k</code> 通过转换运算符变成整数参与运算，和普通 <code>int</code> 没区别。</li>
-  <li><strong>当编译期常量用</strong>：模板参数、数组长度、<code>constexpr</code> 变量的初值、<code>static_assert</code>。这时请写 <code>k.value</code>（或 §2.6 的 <code>decltype(k)::value</code>）：<code>value</code> 是 <code>static constexpr</code> 成员。只要 <code>k</code> 是按值传进来的（像 <code>static_for</code> 的 lambda 参数 <code>auto k</code> 那样），<code>k.value</code> 就是常量表达式；<code>k</code> 是引用参数（<code>const auto&amp; k</code>）时则不行，要从类型里取，§2.6 会专门讲这个坑。</li>
+  <li><strong>当编译期常量用</strong>：模板参数、数组长度、<code>constexpr</code> 变量的初值、<code>static_assert</code>。这时请写 <code>k.value</code>（或 §2.6 的 <code>decltype(k)::value</code>），<code>value</code> 是 <code>static constexpr</code> 成员。只要 <code>k</code> 是按值传进来的（像 <code>static_for</code> 的 lambda 参数 <code>auto k</code> 那样），<code>k.value</code> 就是常量表达式。<code>k</code> 是引用参数（<code>const auto&amp; k</code>）时则不行，要从类型里取，§2.6 会专门讲这个坑。</li>
 </ul>
-<p><strong><code>static_for</code></strong> 把一个“函数”对 Begin、Begin+Inc、…（不含 End）各调用一次，并把每次的循环变量以 <code>number&lt;i&gt;{}</code> 的形式传进去。写法是先构造一个对象 <code>static_for&lt;0, N, 1&gt;{}</code>，再用一个 lambda 调用它：</p>
+<p><strong><code>static_for</code></strong> 把一个“函数”对 Begin、Begin+Inc、…（不含 End）各调用一次，每次把循环变量以 <code>number&lt;i&gt;{}</code> 的形式传进去。写法是先构造一个对象 <code>static_for&lt;0, N, 1&gt;{}</code>，再用一个 lambda 调用它：</p>
 <p class="formula">ck_tile::static_for&lt;0, 4, 1&gt;{}(f); <span class="c">// ≡ f(number&lt;0&gt;{}); f(number&lt;1&gt;{}); f(number&lt;2&gt;{}); f(number&lt;3&gt;{});</span></p>
 <div class="callout note" data-title="lambda 速查">
-  <p><code>[捕获](参数) { 函数体 }</code> 定义一个匿名函数对象。<code>[&amp;]</code> 表示函数体里用到的外部变量都<em>按引用</em>捕获（能读也能改），<code>[=]</code> 是按值拷贝。参数类型写成 <code>auto</code> 的 lambda 叫泛型 lambda（§2.6 细讲）：<code>static_for</code> 每次传进来的 <code>number&lt;i&gt;</code> 类型都不同，所以参数必须是 <code>auto</code>。</p>
+  <p><code>[捕获](参数) { 函数体 }</code> 定义一个匿名函数对象。<code>[&amp;]</code> 表示函数体里用到的外部变量都<em>按引用</em>捕获（能读也能改），<code>[=]</code> 是按值拷贝。参数类型写成 <code>auto</code> 的 lambda 叫泛型 lambda（§2.6 细讲）。<code>static_for</code> 每次传进来的 <code>number&lt;i&gt;</code> 类型都不同，所以参数必须是 <code>auto</code>。</p>
 </div>
 <p>下面的 kernel 让每个线程把自己负责的 N 个连续元素在寄存器里反序（不是 a1 的题目，但用到了同样的两种用法）：</p>
 <pre data-snip="s2_3b"><code class="language-cpp">template &lt;index_t N&gt;
@@ -320,13 +338,14 @@ __global__ void reverse_chunks(const float* in, float* out) {
     out[base + j] = r[k];
   });
 }</code></pre>
-<p>本机以 N = 4、128 个线程运行，输出前 8 个元素为 <code>3 2 1 0 7 6 5 4</code>，全部正确。用 <code>--save-temps</code> 看生成的汇编：没有任何跳转指令（循环被完全展开），4 次标量读被合并成了一条 <code>global_load_dwordx4</code>、4 次写合并成一条 <code>global_store_dwordx4</code>，<code>r</code> 全在寄存器里。</p>
+<p>本机以 N = 4、128 个线程运行，输出前 8 个元素为 <code>3 2 1 0 7 6 5 4</code>，全部正确。用 <code>--save-temps</code> 看生成的汇编：没有任何跳转指令，说明循环被完全展开；4 次标量读合并成了一条 <code>global_load_dwordx4</code>，4 次写合并成一条 <code>global_store_dwordx4</code>；<code>r</code> 全在寄存器里。</p>
 <div class="callout note" data-title="怎样看生成的汇编：--save-temps">
-  <p>给 hipcc 加上 <code>--save-temps</code>，它会把编译的中间文件都留在<strong>当前目录</strong>，其中 GPU 汇编是 <code>&lt;源文件名&gt;-hip-amdgcn-amd-amdhsa-gfx942.s</code>（同名的 <code>.bc</code> 是 LLVM IR 的二进制形式，需要时用 <code>/opt/rocm/llvm/bin/llvm-dis</code> 转成可读的 <code>.ll</code>）。中间文件有十来个，所以先换到一个临时目录，再用绝对路径编译。假设你把上面的 kernel（连同一处启动它的代码）存成了 <code>rev.hip</code>，命令与 <a href="../lab1-hip-basics/tutorial.html#s5-4">Lab 1 §5.4</a> 的 <code>-Rpass-analysis</code> 那条一样，只是换成 <code>--save-temps</code>：</p>
+  <p>给 hipcc 加上 <code>--save-temps</code>，它会把编译的中间文件都留在<strong>当前目录</strong>，其中 GPU 汇编是 <code>&lt;源文件名&gt;-hip-amdgcn-amd-amdhsa-gfx942.s</code>。同名的 <code>.bc</code> 是 LLVM IR（编译器的中间表示）的二进制形式，需要时用 <code>/opt/rocm/llvm/bin/llvm-dis</code> 转成可读的 <code>.ll</code>。中间文件有十来个，所以先换到一个临时目录，再用绝对路径编译。假设你把上面的 kernel（连同一处启动它的代码）存成了 <code>rev.hip</code>，命令与 <a href="../lab1-hip-basics/tutorial.html#s5-4">Lab 1 §5.4</a> 的 <code>-Rpass-analysis</code> 那条一样，只是换成 <code>--save-temps</code>：</p>
 <pre><code class="language-bash">mkdir -p /tmp/asm &amp;&amp; cd /tmp/asm
 /opt/rocm/bin/hipcc -std=c++20 -O2 --offload-arch=gfx942 --save-temps -c /path/to/rev.hip -o rev.o
 grep -n "reverse_chunks" rev-hip-amdgcn-amd-amdhsa-gfx942.s    # 找到 kernel 的入口标签</code></pre>
-  <p>汇编里的 kernel 名是 C++ 的“修饰名”（mangled name），例如 <code>reverse_chunks&lt;4&gt;</code> 是 <code>_Z14reverse_chunksILi4EEvPKfPf</code>，原名就嵌在里面，按原名搜索即可；从这个标签开始、到第一条 <code>s_endpgm</code>（程序结束）为止，就是这个 kernel 的指令。作业文件本身没有 kernel 时（例如 a1 的函数是被 <code>test.cpp</code> 里的 kernel 调用的），就把 <a href="../lab0-env/tutorial.html#s1-4">Lab 0 §1.4</a> 那条 <code>make run</code> 背后的命令里的 <code>-o build/run-a1</code> 换成 <code>--save-temps -c -o t.o</code>（路径都写成绝对路径），汇编在 <code>test-hip-amdgcn-amd-amdhsa-gfx942.s</code>。</p>
+  <p>汇编里的 kernel 名是 C++ 的“修饰名”（mangled name），例如 <code>reverse_chunks&lt;4&gt;</code> 是 <code>_Z14reverse_chunksILi4EEvPKfPf</code>。原名就嵌在里面，按原名搜索即可。从这个标签开始、到第一条 <code>s_endpgm</code>（程序结束）为止，就是这个 kernel 的指令。</p>
+  <p>作业文件本身没有 kernel 时（例如 a1 的函数是被 <code>test.cpp</code> 里的 kernel 调用的），就把 <a href="../lab0-env/tutorial.html#s1-4">Lab 0 §1.4</a> 那条 <code>make run</code> 背后的命令里的 <code>-o build/run-a1</code> 换成 <code>--save-temps -c -o t.o</code>（路径都写成绝对路径），汇编在 <code>test-hip-amdgcn-amd-amdhsa-gfx942.s</code>。</p>
 </div>
 <div class="callout note" data-title="读源码：core/utility/functional.hpp 第 63–81 行">
 <pre><code class="language-cpp">template &lt;typename T, T... Is&gt;
@@ -348,12 +367,13 @@ using make_applier = __make_integer_seq&lt;applier, index_t, Size&gt;;
 template &lt;index_t N&gt;
 struct static_for&lt;0, N, 1&gt; : detail::make_applier&lt;N&gt;
 {</code></pre>
-  <p>这是最常用的 <code>static_for&lt;0, N, 1&gt;</code> 的特化：编译器内建的 <code>__make_integer_seq</code> 生成 <code>applier&lt;index_t, 0, 1, …, N-1&gt;</code>，它的 <code>operator()</code> 用<strong>逗号的一元折叠</strong>把 <code>f(number&lt;0&gt;{})</code>、<code>f(number&lt;1&gt;{})</code>…依次调用一遍——§2.1 和本节的知识在这里汇合。没有循环变量、没有跳转，只有 N 次函数调用，内联后就是 N 份展开的代码。起点不是 0 或步长不是 1 的一般情形走另一条路：第 34 行的 <code>static_for_impl</code> 用 <code>swallow{(f(number&lt;Is&gt;{}), 0)...}</code>——在花括号初始化列表里展开参数包——逐个调用，效果相同。</p>
+  <p>这是专门为最常用的 <code>static_for&lt;0, N, 1&gt;</code> 单独写的一个版本。这种“为某组特定的模板参数另写一份实现”叫模板的<strong>特化</strong>。编译器内建的 <code>__make_integer_seq</code> 生成 <code>applier&lt;index_t, 0, 1, …, N-1&gt;</code>，它的 <code>operator()</code> 用<strong>逗号的一元折叠</strong>把 <code>f(number&lt;0&gt;{})</code>、<code>f(number&lt;1&gt;{})</code>…依次调用一遍。§2.1 和本节的知识在这里汇合：没有循环变量、没有跳转，只有 N 次函数调用，内联后就是 N 份展开的代码。</p>
+  <p>起点不是 0 或步长不是 1 的一般情形走另一条路：第 34 行的 <code>static_for_impl</code> 在花括号初始化列表里展开参数包，写成 <code>swallow{(f(number&lt;Is&gt;{}), 0)...}</code>，逐个调用，效果相同。</p>
 </div>
 <p class="sec-assign">对应 a1 的 E3（<code>fill_squares</code>）。</p>
 
 <h3 id="s2-4"><span class="sec">§2.4</span><code>if constexpr</code></h3>
-<p>普通 <code>if</code> 在运行期选分支，但<strong>两个分支都必须能编译</strong>。在模板里，这常常做不到：同一段代码对 <code>float</code> 和对一个容器类型要做完全不同的事。<code>if constexpr (条件)</code> 要求条件是编译期常量，并且在模板实例化时<strong>直接丢弃没被选中的分支</strong>——那个分支不会被实例化，里面的代码对当前类型不合法也没关系。</p>
+<p>普通 <code>if</code> 在运行期选分支，但<strong>两个分支都必须能编译</strong>。在模板里，这常常做不到：同一段代码对 <code>float</code> 和对一个容器类型要做完全不同的事。<code>if constexpr (条件)</code> 要求条件是编译期常量，并且在模板实例化时<strong>直接丢弃没被选中的分支</strong>：那个分支不会被实例化，里面的代码对当前类型不合法也没关系。</p>
 <pre data-snip="s2_4a"><code class="language-cpp">template &lt;class T&gt;
 constexpr const char* kind() {
   if constexpr (std::is_same_v&lt;T, ck_tile::half_t&gt;) return "fp16";
@@ -386,7 +406,7 @@ static_assert(length_of(ck_tile::array&lt;int, 5&gt;{}) == 5);</code></pre>
         return array&lt;index_t, 2&gt;{get_warp_id(), get_lane_id()};
     }
 }</code></pre>
-  <p><code>NDimP</code> 是 <code>static constexpr</code> 成员，所以能用 <code>if constexpr</code>。注意两个分支返回的<strong>类型不同</strong>（长度 1 和长度 2 的 array），普通 <code>if</code> 根本写不出来——函数的返回类型 <code>auto</code> 只由被选中的那个分支决定。这段代码的<em>含义</em>是 §3.2 的重点之一，先记住它的样子。</p>
+  <p><code>NDimP</code> 是 <code>static constexpr</code> 成员，所以能用 <code>if constexpr</code>。注意两个分支返回的<strong>类型不同</strong>（长度 1 和长度 2 的 array），普通 <code>if</code> 根本写不出来：函数的返回类型 <code>auto</code> 只由被选中的那个分支决定。这段代码的<em>含义</em>是 §3.2 的重点之一，先记住它的样子。</p>
 </div>
 <p class="sec-assign">对应 a1 的 E4（<code>vec16</code>）。</p>
 
@@ -397,7 +417,7 @@ static_assert(t.size() == 3);
 static_assert(t.at(number&lt;0&gt;{}) == 7);
 static_assert(std::is_same_v&lt;std::remove_cvref_t&lt;decltype(t.at(number&lt;1&gt;{}))&gt;, float&gt;);
 static_assert(std::is_same_v&lt;std::remove_cvref_t&lt;decltype(t.at(number&lt;2&gt;{}))&gt;, number&lt;16&gt;&gt;);</code></pre>
-<p><strong>为什么下标必须是 <code>number&lt;I&gt;</code>？</strong>因为 <code>at</code> 的<em>返回类型</em>取决于下标：第 0 个是 <code>int</code>，第 1 个是 <code>float</code>。C++ 函数的返回类型必须在编译期确定，所以下标只能是编译期的值——放在类型里传进去。用运行期的 <code>int</code> 当下标，找不到匹配的重载：</p>
+<p><strong>为什么下标必须是 <code>number&lt;I&gt;</code>？</strong>因为 <code>at</code> 的<em>返回类型</em>取决于下标：第 0 个是 <code>int</code>，第 1 个是 <code>float</code>。C++ 函数的返回类型必须在编译期确定，所以下标只能是编译期的值，放在类型里传进去。用运行期的 <code>int</code> 当下标，找不到匹配的重载：</p>
 <pre><code class="language-bash">error: no matching member function for call to 'at'</code></pre>
 <p>要遍历 tuple，就把 §2.3 的 <code>static_for</code> 用上：它给出的循环变量恰好是 <code>number&lt;i&gt;</code>。每一轮拿到的元素类型都可能不同，可以配合 <code>decltype</code> 和 §2.4 的 <code>if constexpr</code> 分别处理：</p>
 <pre data-snip="s2_5b"><code class="language-cpp">// 数一数 tuple 里有几个浮点元素
@@ -411,13 +431,13 @@ constexpr index_t count_floating(const ck_tile::tuple&lt;Ts...&gt;&amp; tup) {
   return cnt;
 }
 static_assert(count_floating(ck_tile::make_tuple(1, 2.5f, 3.0, 'x')) == 2);</code></pre>
-<p>在 CK-Tile 里 tuple 有两种用途。一是装<strong>运行期的值</strong>，比如 a2 里 <code>make_naive_tensor_view(a, make_tuple(n), make_tuple(1), …)</code> 的长度和 stride。二是只当<strong>类型</strong>用，装一串 <code>sequence</code>：§3.2 的 <code>tile_distribution_encoding&lt;sequence&lt;&gt;, tuple&lt;sequence&lt;…&gt;&gt;, …&gt;</code> 从不创建这个 tuple 的对象，只是借它的模板参数列表表示“若干个 sequence”。</p>
+<p>在 CK-Tile 里 tuple 有两种用途。一是装<strong>运行期的值</strong>，比如 a2 里 <code>make_naive_tensor_view(a, make_tuple(n), make_tuple(1), …)</code> 的长度和 stride。二是只当<strong>类型</strong>用，装一串 <code>sequence</code>：§3.2 的 <code>tile_distribution_encoding&lt;sequence&lt;&gt;, tuple&lt;sequence&lt;…&gt;&gt;, …&gt;</code> 从不创建这个 tuple 的对象，只借它的模板参数列表表示“若干个 sequence”。</p>
 <div class="callout note" data-title="读源码：core/container/tuple.hpp 第 278–281 行">
 <pre><code class="language-cpp">template&lt;index_t I&gt; CK_TILE_HOST_DEVICE constexpr decltype(auto) at() const          { TP_COM_(); return impl::getv&lt;I&gt;(*this); }
 template&lt;index_t I&gt; CK_TILE_HOST_DEVICE constexpr decltype(auto) at(number&lt;I&gt;) const { TP_COM_(); return get&lt;I&gt;(); }
 template&lt;index_t I&gt; CK_TILE_HOST_DEVICE constexpr decltype(auto) at()                      { TP_COM_(); return impl::getv&lt;I&gt;(*this); }
 template&lt;index_t I&gt; CK_TILE_HOST_DEVICE constexpr decltype(auto) at(number&lt;I&gt;)             { TP_COM_(); return get&lt;I&gt;(); }</code></pre>
-  <p><code>at(number&lt;I&gt;)</code> 的形参甚至没有名字——它只用来让编译器从<em>类型</em>里推导出 I，对象本身毫无用处。这是 CK-Tile 里极常见的手法（“tag dispatch”）。<code>TP_COM_()</code> 是第 267 行定义的宏，展开成 <code>static_assert(I &lt; size(), …)</code>，越界在编译期就报错。另外注意：<code>ck_tile::tuple</code> 和 <code>std::tuple</code> 是两个不同的类型，不能混用。</p>
+  <p><code>at(number&lt;I&gt;)</code> 的形参甚至没有名字：它只用来让编译器从<em>类型</em>里推导出 I，对象本身毫无用处。这是 CK-Tile 里极常见的手法，叫 tag dispatch。<code>TP_COM_()</code> 是第 267 行定义的宏，展开成 <code>static_assert(I &lt; size(), …)</code>，越界在编译期就报错。另外注意：<code>ck_tile::tuple</code> 和 <code>std::tuple</code> 是两个不同的类型，不能混用。</p>
 </div>
 <p class="sec-assign">对应 a1 的 E5（<code>tuple_sum</code>）。</p>
 
@@ -425,17 +445,17 @@ template&lt;index_t I&gt; CK_TILE_HOST_DEVICE constexpr decltype(auto) at(number
 <p>参数类型写成 <code>auto</code> 的 lambda 是<strong>泛型 lambda</strong>，相当于一个带模板 <code>operator()</code> 的函数对象：每用一种新的参数类型调用它，编译器就生成一个新版本。</p>
 <pre data-snip="s2_6a"><code class="language-cpp">constexpr auto twice = [](auto x) { return x + x; };   // 每种参数类型生成一个版本
 static_assert(twice(3) == 6 &amp;&amp; twice(1.5) == 3.0);</code></pre>
-<p><code>decltype(a)</code> 给出变量 <code>a</code> 的<em>声明类型</em>。当 <code>a</code> 的类型是 <code>number&lt;6&gt;</code> 时，<code>decltype(a)::value</code> 就是那个类型的 <code>static constexpr</code> 成员 6——它是常量表达式，与 <code>a</code> 是“运行期的函数参数”毫不矛盾，因为我们根本没有读 <code>a</code> 这个对象，只读了它的类型。于是 lambda 可以把计算结果再放回类型里返回：</p>
+<p><code>decltype(a)</code> 给出变量 <code>a</code> 的<em>声明类型</em>。当 <code>a</code> 的类型是 <code>number&lt;6&gt;</code> 时，<code>decltype(a)::value</code> 就是那个类型的 <code>static constexpr</code> 成员 6，是一个常量表达式。为什么运行期的参数能给出编译期的结果？因为 <code>decltype(a)</code> 问的是“<code>a</code> 是什么类型”，而不是“<code>a</code> 现在的值是多少”；<code>number&lt;6&gt;</code> 的 <code>value</code> 是 6，这件事写死在类型里。于是 lambda 可以把计算结果再放回类型里返回：</p>
 <pre data-snip="s2_6b"><code class="language-cpp">constexpr auto is_even = [](auto a) {
   return bool_constant&lt;decltype(a)::value % 2 == 0&gt;{};      // 值从参数的“类型”里取
 };
 static_assert(std::is_same_v&lt;decltype(is_even(number&lt;6&gt;{})), bool_constant&lt;true&gt;&gt;);
 static_assert(std::is_same_v&lt;decltype(is_even(number&lt;7&gt;{})), bool_constant&lt;false&gt;&gt;);</code></pre>
-<p>这里 <code>bool_constant&lt;b&gt;</code> 是 <code>ck_tile::constant&lt;b&gt;</code> 的别名（与 <code>number</code> 定义在同一个文件），返回值的“结果”完全在类型里，调用方用 <code>decltype(…)</code> 就能在编译期拿到。</p>
+<p>这里 <code>bool_constant&lt;b&gt;</code> 是 <code>ck_tile::constant&lt;b&gt;</code> 的别名，与 <code>number</code> 定义在同一个文件。返回值的“结果”完全在类型里，调用方用 <code>decltype(…)</code> 就能在编译期拿到。</p>
 <div class="callout pitfall" data-title="参数是引用时，decltype 带着引用">
-  <p>CK-Tile 源码里的 lambda 常把参数写成 <code>const auto&amp; a</code>。这时 <code>decltype(a)</code> 是 <code>const number&lt;6&gt;&amp;</code>（报错里显示为它的真名 <code>const ck_tile::constant&lt;6&gt; &amp;</code>）——引用类型没有成员，<code>decltype(a)::value</code> 直接报错：</p>
+  <p>CK-Tile 源码里的 lambda 常把参数写成 <code>const auto&amp; a</code>。这时 <code>decltype(a)</code> 是 <code>const number&lt;6&gt;&amp;</code>（编译器报错时会展开类型别名，显示为 <code>const ck_tile::constant&lt;6&gt; &amp;</code>）。引用类型没有成员，<code>decltype(a)::value</code> 直接报错：</p>
 <pre><code class="language-bash">error: type 'decltype(a)' (aka 'const ck_tile::constant&lt;6&gt; &amp;') cannot be used prior to '::' because it has no members</code></pre>
-  <p>解决办法是先去掉 const 和引用：<code>ck_tile::remove_cvref_t&lt;decltype(a)&gt;::value</code>。这也是你在 CK-Tile 里到处看到 <code>remove_cvref_t&lt;decltype(…)&gt;</code> 的原因。（顺带一提：按引用传参时，连 <code>a.value</code> 都不能当模板参数——本机 clang 报 “non-type template argument is not a constant expression”；按值传参的 <code>auto a</code> 则两种写法都行。）</p>
+  <p>解决办法是先去掉 const 和引用：<code>ck_tile::remove_cvref_t&lt;decltype(a)&gt;::value</code>。这也是你在 CK-Tile 里到处看到 <code>remove_cvref_t&lt;decltype(…)&gt;</code> 的原因。顺带一提：按引用传参时，连 <code>a.value</code> 都不能当模板参数，本机 clang 报 “non-type template argument is not a constant expression”；按值传参的 <code>auto a</code> 则两种写法都行。</p>
 </div>
 <pre data-snip="s2_6c"><code class="language-cpp">constexpr auto is_even_ref = [](const auto&amp; a) {
   using A = ck_tile::remove_cvref_t&lt;decltype(a)&gt;;           // const number&lt;6&gt;&amp; → number&lt;6&gt;
@@ -459,13 +479,13 @@ static_assert(decltype(is_even_ref(number&lt;6&gt;{}))::value);</code></pre>
         number&lt;NDimX&gt;{});
 #endif
 }</code></pre>
-  <p>求一个 tile distribution 的各维长度：<code>generate_tuple(f, number&lt;N&gt;{})</code> 用 <code>number&lt;0&gt;</code>…<code>number&lt;N-1&gt;</code> 依次调用泛型 lambda <code>f</code>，把返回值收集成 tuple。lambda 里先用 <code>i</code> 从类型 <code>HsLengthss</code>（一个 tuple of sequence）中挑出第 i 个 sequence，把它的元素连乘成 <code>constexpr</code> 的 <code>x_length</code>，再以 <code>number&lt;x_length&gt;</code> 返回——结果放回了类型里。本节的每个知识点都在这十几行里出现了。</p>
+  <p>求一个 tile distribution 的各维长度：<code>generate_tuple(f, number&lt;N&gt;{})</code> 用 <code>number&lt;0&gt;</code>…<code>number&lt;N-1&gt;</code> 依次调用泛型 lambda <code>f</code>，把返回值收集成 tuple。lambda 里先用 <code>i</code> 从类型 <code>HsLengthss</code>（一个装着 sequence 的 tuple）中挑出第 i 个 sequence，把它的元素连乘成 <code>constexpr</code> 的 <code>x_length</code>，再以 <code>number&lt;x_length&gt;</code> 返回，结果又放回了类型里。本节的每个知识点都在这十几行里出现了。</p>
 </div>
 <p>§3.4 的 <code>sweep_tile(t, [&amp;](auto idx) { … })</code> 也是同一个模式：<code>idx</code> 的类型编码了“这是本线程的第几个元素”，lambda 被展开成每个元素一份。</p>
 <p class="sec-assign">对应 a1 的 E6（<code>add_numbers</code>）。</p>
 
 <div class="assignment-card" data-assign="a1" data-lab="lab2-cktile-intro" data-path="lab2-cktile-intro/a1-cpp-meta/cpp_meta.hip" data-title="读懂 CK-Tile 所需的 C++">
-  <p>用 CK-Tile 自己的 <code>sequence</code>、<code>array</code>、<code>number</code>、<code>static_for</code>、<code>tuple</code> 完成 6 个小函数：折叠表达式求积（E1，§2.1）、编译期行主序 stride（E2，§2.2）、设备端 <code>static_for</code>（E3，§2.3）、<code>if constexpr</code>（E4，§2.4）、异构 tuple 求和（E5，§2.5）、返回 <code>number</code> 的泛型 lambda（E6，§2.6）。所有函数都必须保持 <code>constexpr</code>（E3 的 <code>__device__</code> 函数除外）：测试会在编译期调用它们，丢掉 <code>constexpr</code> 会让整个测试编译失败。</p>
+  <p>用 CK-Tile 自己的 <code>sequence</code>、<code>array</code>、<code>number</code>、<code>static_for</code>、<code>tuple</code> 完成 6 个小函数：折叠表达式求积（E1，§2.1）、编译期行主序 stride（E2，§2.2）、设备端 <code>static_for</code>（E3，§2.3）、<code>if constexpr</code>（E4，§2.4）、异构 tuple 求和（E5，§2.5）、返回 <code>number</code> 的泛型 lambda（E6，§2.6）。E1、E2、E4、E5 必须保持 <code>constexpr</code>：测试会在常量表达式里调用它们，丢掉 <code>constexpr</code> 整个测试会编译失败。E3 是 <code>__device__</code> 函数。E6 的测试只用 <code>decltype</code> 检查返回类型，而且 lambda 的调用运算符从 C++17 起只要满足条件就自动是 constexpr，保留骨架写法即可。</p>
 </div>
 <p class="sec-assign">本节对应 <a href="#s2">Assignment a1</a>，任务说明与提示见 <code>lab2-cktile-intro/a1-cpp-meta/README.md</code>。书面问题 2 要你在 <code>integral_constant.hpp</code> 里自己找答案。</p>
 
@@ -503,7 +523,7 @@ static_assert(decltype(is_even_ref(number&lt;6&gt;{}))::value);</code></pre>
   </svg>
   <figcaption><b>图 3.1</b>四件套。前三件只是“描述”，不搬任何数据；真正的访存发生在第四件。</figcaption>
 </figure>
-<p>贯穿本节的例子是<strong>缩放</strong> <code>y[i] = alpha * x[i]</code>，并且故意选了一个与 a2 不同的配置：<strong>每个 block 只有 1 个 wavefront（64 线程）</strong>，每个线程做 2 轮、每轮连续 4 个 float，一个 block 处理 2 × 64 × 4 = 512 个元素。各小节先讲概念、给出 kernel 的对应几行，§3.4 末尾给出完整代码与本机运行结果。</p>
+<p>贯穿本节的例子是<strong>缩放</strong> <code>y[i] = alpha * x[i]</code>，并且故意选了一个与 a2 不同的配置：<strong>每个 block 只有 1 个 wavefront（64 线程）</strong>，每个线程做 2 轮、每轮连续 4 个 float，一个 block 处理 2 × 64 × 4 = 512 个元素。各小节先讲概念、给出 kernel 里对应的几行；§3.4 末尾给出完整代码和本机运行结果。</p>
 
 <h3 id="s3-1"><span class="sec">§3.1</span>tensor view 与 buffer 寻址</h3>
 <p><strong>tensor view</strong> 给一个裸指针加上形状：各维长度和各维 stride（§2.2）。一维连续数组只有一维，长度 n、stride 1：</p>
@@ -526,7 +546,11 @@ auto vy = make_naive_tensor_view&lt;address_space_enum::global&gt;(
   </tbody>
 </table>
 </div>
-<p>最后两个参数是编译期的“承诺”，默认值 -1 表示不承诺。注意 naive 视图<strong>不会自己推导</strong>出“可以向量化”：不写这两个参数时，CK-Tile 只能一次访问 1 个元素。本机实测，§3.4 例子的分布下每次访问的元素数（<code>ScalarPerVector</code>）从 4 变成 1，每个线程的访问次数变成原来的 4 倍。在这个最简单的一维例子里，省略后的最终汇编碰巧仍然相同，那是因为编译器后端把相邻的 4 次标量 buffer 访问合并成了一条 <code>dwordx4</code>（看 LLVM IR 能发现 CK-Tile 发出的是一次 1 个 float 的 buffer 访问）。这种合并不能指望：换成二维视图、fp16 或别的长度，就未必发生。所以想要向量访存，就要写上这两个参数，并让它们与分布相符（向量长度怎样确定，见 §3.2 例子后面那段）。</p>
+<p>最后两个参数是编译期的“承诺”，默认值 -1 表示不承诺。naive 视图<strong>不会自己推导</strong>出“可以向量化”：不写这两个参数时，CK-Tile 按一次 1 个元素组织访问。所以想要向量访存，就要写上这两个参数，并让它们与分布相符（向量长度怎样确定，见 §3.2 例子后面那段）。</p>
+<details class="deep"><summary>不写这两个参数时，汇编为什么有时还是一样</summary>
+  <p>本机实测，§3.4 例子的分布下，不写这两个参数时每次访问的元素数从 4 变成 1（CK-Tile 内部把这个数叫 <code>ScalarPerVector</code>，§4.2 的读源码练习会遇到），每个线程的访问次数变成原来的 4 倍。</p>
+  <p>在这个最简单的一维例子里，最终汇编碰巧仍然相同：编译器后端把相邻的 4 次标量 buffer 访问合并成了一条 <code>dwordx4</code>。看 LLVM IR（编译器的中间表示）能发现，CK-Tile 发出的确实是一次 1 个 float 的访问。这种合并不能指望：换成二维视图、fp16 或别的长度，就未必发生。</p>
+</details>
 <div class="callout note" data-title="读源码：core/tensor/tensor_view.hpp 第 461–486 行（节选）">
 <pre><code class="language-cpp">template &lt;address_space_enum BufferAddressSpace = address_space_enum::generic,
           memory_operation_enum DstInMemOp      = memory_operation_enum::set,
@@ -549,7 +573,7 @@ make_naive_tensor_view(DataType* __restrict__ p,
         make_buffer_view&lt;BufferAddressSpace, Coherence&gt;(p, desc.get_element_space_size());
     return tensor_view&lt;decltype(buffer_view), decltype(desc), DstInMemOp&gt;{buffer_view, desc};
 }</code></pre>
-  <p>一个 tensor view 由两部分组成：<strong>descriptor</strong>（长度、stride，负责“坐标 → 偏移”）和 <strong>buffer view</strong>（指针 + 元素总数，负责真正的读写）。注意 <code>sizeof...(Lengths) == sizeof...(Strides)</code> 这个 <code>enable_if</code>：长度和 stride 个数不同，这个函数就“不存在”，编译器会报找不到匹配的函数。<code>DataType</code> 从指针推导：<code>const float*</code> 推出 <code>const float</code>。</p>
+  <p>一个 tensor view 由两部分组成：<strong>descriptor</strong>（长度、stride，负责“坐标 → 偏移”）和 <strong>buffer view</strong>（指针 + 底层存储的跨度，负责真正的读写）。本例是一维连续数组，跨度就是 n 个元素。注意 <code>sizeof...(Lengths) == sizeof...(Strides)</code> 这个条件：它写在 <code>enable_if</code> 里，意思是长度和 stride 个数不同时，这个函数版本对编译器来说“不存在”，编译器会报找不到匹配的函数。<code>DataType</code> 从指针推导：<code>const float*</code> 推出 <code>const float</code>。</p>
 </div>
 <div class="callout pitfall" data-title="往只读视图里写">
   <p>用 <code>const float*</code> 建的视图做 <code>store_tile</code>，错误发生在很深的地方，第一行是：</p>
@@ -557,12 +581,12 @@ make_naive_tensor_view(DataType* __restrict__ p,
 …: note: in instantiation of function template specialization 'ck_tile::buffer_view&lt;ck_tile::address_space_enum::global, const float, long, true, …&gt;::set&lt;…&gt;' requested here</code></pre>
   <p>看到 <code>buffer_view&lt;…, const float, …&gt;::set</code> 就该想到：要写的那个数组，视图是用 const 指针建的。</p>
 </div>
-<p><strong>buffer 寻址：越界屏蔽从哪里来。</strong>Lab 1 的 kernel 用的是普通的全局访存指令（<code>global_load_dword</code> 等），每个 lane 给出一个完整的 64 位地址，硬件不知道数组有多长，所以必须自己写 <code>if (i &lt; n)</code>。AMD GPU 还有另一类访存指令：<strong>buffer 指令</strong>。它的地址由两部分组成：</p>
+<p><strong>buffer 寻址：越界屏蔽从哪里来。</strong>Lab 1 的 kernel 用的是普通的全局访存指令（<code>global_load_dword</code> 等），每个 lane 给出一个完整的 64 位地址。硬件不知道数组有多长，所以必须自己写 <code>if (i &lt; n)</code>。AMD GPU 还有另一类访存指令：<strong>buffer 指令</strong>。它的地址由两部分组成：</p>
 <ul>
   <li>一个 128 位的<strong>资源描述符（buffer resource）</strong>，放在 4 个标量寄存器（SGPR）里，整个 wavefront 共用。里面有基地址和这块缓冲区的<strong>字节长度（range）</strong>。</li>
   <li>每个 lane 自己的<strong>字节偏移</strong>，放在向量寄存器（VGPR）里。</li>
 </ul>
-<p>硬件会拿每个 lane 的偏移与 range 比较，超出范围的访问被屏蔽，不会碰到缓冲区之外的内存。CK-Tile 对 <code>address_space_enum::global</code> 的视图就用 buffer 指令，range 设为“元素总数 × 元素字节数”，也就是 n × 4 字节。</p>
+<p>硬件会拿每个 lane 的偏移与 range 比较，超出范围的访问被屏蔽，不会碰到缓冲区之外的内存。CK-Tile 对 <code>address_space_enum::global</code> 的视图就用 buffer 指令，range 设为“底层跨度 × 元素字节数”，本例就是 n × 4 字节。这里讲的越界结论针对一维连续数组；二维视图带行间距时情况不同，§4.1 的第 1 个问题请你想一想。</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 228" role="img" aria-labelledby="fig32-t">
     <title id="fig32-t">buffer 指令：SGPR 中的资源描述符给出基地址与长度，VGPR 中每个 lane 给出偏移，越过长度的访问被硬件屏蔽</title>
@@ -589,9 +613,14 @@ make_naive_tensor_view(DataType* __restrict__ p,
   <figcaption><b>图 3.2</b>buffer 寻址。这条指令就是 §3.4 例子 kernel 实际生成的第一条读指令（<code>--save-temps</code> 所见）：<code>offen</code> 表示使用 VGPR 中的偏移。整个 wavefront 用 64 × 16 = 1024 个连续字节，正是 Lab 1 §3.1 说的合并访存。</figcaption>
 </figure>
 <div class="callout pitfall" data-title="检查粒度是 4 字节，不是“一个元素”">
-  <p>range 检查以 dword（4 字节）为单位。float 一个元素正好一个 dword，所以本课里“部分越界的向量被逐元素屏蔽”成立。fp16 / bf16（2 字节）、int8（1 字节）这类小类型就不同了：只要一个 dword 有一部分越界，<strong>整个 dword 都被屏蔽，连同其中合法的元素</strong>。本机实测 fp16、每线程 8 个元素的一维视图：n = 505 时，合法的第 504 个元素 load 读回 0、store 没有写进去；n = 506 时一切正常。以后用这类小类型时，总字节数不是 4 的倍数（fp16 即 n 为奇数）的用例要特别留意。</p>
+  <p>range 检查以 dword（4 字节）为单位。float 一个元素正好一个 dword，所以本课里“部分越界的向量被逐元素屏蔽”成立。fp16 / bf16（2 字节）、int8（1 字节）这类小类型就不同了：只要一个 dword 有一部分越界，<strong>整个 dword 都被屏蔽，连同其中合法的元素</strong>。</p>
+  <p>本机实测 fp16、每线程 8 个元素的一维视图：n = 505 时，合法的第 504 个元素 load 读回 0、store 没有写进去；n = 506 时一切正常。以后用这类小类型时，总字节数不是 4 的倍数（fp16 即 n 为奇数）的用例要特别留意。</p>
 </div>
-<p>对本课用的 naive 视图，<strong>越界屏蔽完全由这条硬件 range 检查完成</strong>，range 由视图长度 n 决定。CK-Tile 在软件层也会为每次访问算一个“坐标是否有效”的标志（<code>tensor_view.hpp</code> 第 88 行的 <code>coordinate_has_valid_offset_assuming_top_index_is_valid</code>）并交给 buffer view，但注意名字里的 <em>assuming_top_index_is_valid</em>：它<em>假定</em>窗口里的坐标本身在范围内，只检查 pad 这类“合法坐标也可能映射到无效位置”的变换。naive 视图里没有这类变换，这个标志在编译期就是常量 <code>true</code>，会被优化掉（本机汇编里没有为它生成任何选择指令 <code>v_cndmask</code>）；以后用到 <code>pad_tensor_view</code> 时它才真正起作用。所以你在 kernel 里不需要也不应该写 <code>if (i &lt; n)</code>，但原因是 buffer 指令，不是软件判断。至于“越界的读到底返回什么值、越界的写具体怎样被丢掉”，留给 a2 的书面问题 2：从 <code>buffer_view.hpp</code> 里 <code>address_space_enum::global</code> 那个特化的 <code>get</code>、<code>set</code> 出发，一路追到 <code>core/arch/amd_buffer_addressing.hpp</code> 里真正发出 buffer 指令的函数。</p>
+<p>对本课用的一维 naive 视图，<strong>越界屏蔽完全由这条硬件 range 检查完成</strong>，range 由视图长度 n 决定。所以你在 kernel 里不需要、也不应该写 <code>if (i &lt; n)</code>。CK-Tile 在软件层也会为每次访问算一个“坐标是否有效”的标志，但对 naive 视图它在编译期就是常量 <code>true</code>，会被优化掉；它在 pad 这类视图变换里才起作用（Lab 3 讲）。</p>
+<details class="deep"><summary>软件有效标志：它是哪个函数、假设了什么</summary>
+  <p>这个标志由 <code>tensor_view.hpp</code> 第 88 行的 <code>coordinate_has_valid_offset_assuming_top_index_is_valid</code> 算出，再交给 buffer view。注意名字里的 <em>assuming_top_index_is_valid</em>：它<em>假定</em>窗口里的坐标本身在范围内，只检查 pad 这类“合法坐标也可能映射到无效位置”的变换。naive 视图里没有这类变换，标志恒为 <code>true</code>。本机汇编里没有为它生成任何条件选择指令；以后用到 <code>pad_tensor_view</code> 时，它才真正起作用。</p>
+</details>
+<p>至于越界的读到底返回什么值、越界的写具体怎样被丢掉，留给 a2 的书面问题 2：从 <code>buffer_view.hpp</code> 里 <code>address_space_enum::global</code> 那个特化的 <code>get</code>、<code>set</code> 出发，一路追到 <code>core/arch/amd_buffer_addressing.hpp</code> 里真正发出 buffer 指令的函数。</p>
 <div class="callout note" data-title="读源码：core/arch/amd_buffer_addressing.hpp 第 87–108 行">
 <pre><code class="language-cpp">// 128 bit SGPRs to supply buffer resource in buffer instructions
 // https://rocm-documentation.readthedocs.io/en/latest/GCN_ISA_Manuals/testdocbook.html#vector-memory-buffer-instructions
@@ -615,7 +644,7 @@ CK_TILE_DEVICE int32x4_t make_wave_buffer_resource(const void* ptr,
     }
     return r;
 }</code></pre>
-  <p>8 字节指针 + 4 字节 range + 4 字节配置 = 128 位，正好 4 个 32 位寄存器。<code>range</code> 是 32 位无符号数，所以单个 buffer 视图最多覆盖 4 GiB——本课的数组远小于此。</p>
+  <p>8 字节指针 + 4 字节 range + 4 字节配置 = 128 位，正好 4 个 32 位寄存器。<code>range</code> 是 32 位无符号的字节数，最大 2<sup>32</sup> − 1 字节，不到 4 GiB；更大的数组要分段处理。本课的数组远小于这个上界。</p>
 </div>
 
 <p class="sec-assign">对应 a2 的 a2-1（构造 <code>vb</code>、<code>vc</code>）。</p>
@@ -634,7 +663,7 @@ CK_TILE_DEVICE int32x4_t make_wave_buffer_resource(const void* ptr,
   </tbody>
 </table>
 </div>
-<p>一个合法的、每个元素恰好归一个线程的分布，要求 <strong>H 的每一段恰好被一个 P 或一个 Y 认领</strong>。认领关系用“(major, minor) 地址”写：major 选是哪一组——<strong>0 表示 R，k ≥ 1 表示第 k−1 个 X 维的 H</strong>；minor 选这一组里的第几段（从 0 数）。<code>tile_distribution_encoding</code> 的 6 个模板参数就是：</p>
+<p>一个合法的、每个元素恰好归一个线程的分布，要求 <strong>H 的每一段恰好被一个 P 或一个 Y 认领</strong>。认领关系用一对整数 (major, minor) 表示：major 指定是哪一组，<strong>0 表示 R，k ≥ 1 表示第 k−1 个 X 维的 H</strong>；minor 指定这一组里的第几段，从 0 数。<code>tile_distribution_encoding</code> 的 6 个模板参数就是：</p>
 <div class="callout note" data-title="读源码：core/tensor/tile_distribution_encoding.hpp 第 19–25 行">
 <pre><code class="language-cpp">template &lt;typename RsLengths_,    // sequence&lt;...&gt;
           typename HsLengthss_,   // tuple&lt;sequence&lt;...&gt;, ...&gt;
@@ -652,10 +681,10 @@ struct tile_distribution_encoding</code></pre>
     <li><strong>Y → minor</strong>：与上一项一一对应的段号。</li>
   </ol>
 </div>
-<p><strong>P 维有几个、各代表什么？</strong>这不是随你定义的：线程的“身份”由 §2.4 摘过的那段源码决定（<code>tile_distribution.hpp</code> 第 94–107 行）——P 维<strong>只能是 1 个或 2 个</strong>。1 个时，P<sub>0</sub> = lane id（0–63）；2 个时，P<sub>0</sub> = warp id（<code>threadIdx.x / get_warp_size()</code>，gfx942 上就是 <code>threadIdx.x / 64</code>，即 block 内第几个 wavefront），P<sub>1</sub> = lane id。</p>
+<p><strong>P 维有几个、各代表什么？</strong>这不由你定义，而是由线程的“身份”决定，也就是 §2.4 摘过的那段源码（<code>tile_distribution.hpp</code> 第 94–107 行）：P 维<strong>只能是 1 个或 2 个</strong>。1 个时，P<sub>0</sub> = lane id（0–63）；2 个时，P<sub>0</sub> = warp id，P<sub>1</sub> = lane id。warp id 是 <code>threadIdx.x / get_warp_size()</code>，在 gfx942 上就是 <code>threadIdx.x / 64</code>，即 block 内的第几个 wavefront。</p>
 <div class="callout warn" data-title="CK-Tile 里的 warp 与 64：和 Lab 1 的 warpSize 原则怎么对上">
-  <p><strong>名字。</strong>CK-Tile 源码沿用 “warp” 一词，但指的就是本课程的 wavefront（gfx942 上 64 个 lane），<em>不是</em> CUDA 的 32 线程 warp（<a href="../lab0-env/tutorial.html#s2-2">Lab 0 §2.2</a> 术语表）。<code>get_warp_id()</code> 就是你在 <a href="../lab1-hip-basics/tutorial.html#s4-4">Lab 1 §4.4</a> 算过的 <code>wave_id</code>，<code>get_lane_id()</code> 就是 lane。下文的 warp id、<code>kWarps</code>、以后的 “warp GEMM” 都按这个意思读。</p>
-  <p><strong>为什么这里可以写 64。</strong><a href="../lab1-hip-basics/tutorial.html#s4-3">Lab 1 §4.3</a> 说过：不要写死 wavefront 宽度，一律从 <code>warpSize</code> 推出；而 <code>warpSize</code> 在 HIP（ROCm 7.2）里是<em>运行时</em>值。tile distribution 却是一个<em>编译期</em>类型——lane 认领的段长（例如下面的 64）必须是编译期常量，用不了 <code>warpSize</code>。CK-Tile 的办法是自己提供一个 <code>constexpr</code> 函数（<code>core/arch/arch.hpp</code> 第 63–70 行）：</p>
+  <p><strong>名字。</strong>CK-Tile 源码沿用 “warp” 一词，但指的就是本课程的 wavefront（gfx942 上 64 个 lane），<em>不是</em> CUDA 的 32 线程 warp（<a href="../lab0-env/tutorial.html#s2-2">Lab 0 §2.2</a> 术语表）。<code>get_warp_id()</code> 就是你在 <a href="../lab1-hip-basics/tutorial.html#s4-4">Lab 1 §4.4</a> 算过的 <code>wave_id</code>，<code>get_lane_id()</code> 就是 lane。下文的 warp id、<code>kWarps</code> 都按这个意思读。</p>
+  <p><strong>为什么这里可以写 64。</strong><a href="../lab1-hip-basics/tutorial.html#s4-3">Lab 1 §4.3</a> 说过，不要写死 wavefront 宽度，一律从 <code>warpSize</code> 推出；而 <code>warpSize</code> 在 ROCm 7.2 里是<em>运行时</em>值。tile distribution 却是一个<em>编译期</em>类型：lane 认领的段长（例如下面的 64）必须是编译期常量，用不了 <code>warpSize</code>。CK-Tile 的办法是自己提供一个 <code>constexpr</code> 函数（<code>core/arch/arch.hpp</code> 第 63–70 行）：</p>
 <pre><code class="language-cpp">CK_TILE_HOST_DEVICE constexpr index_t get_warp_size()
 {
 #if defined(__GFX9__) || !defined(__HIP_DEVICE_COMPILE__)
@@ -664,10 +693,13 @@ struct tile_distribution_encoding</code></pre>
     return 32;
 #endif
 }</code></pre>
-  <p>它按<em>编译目标</em>决定宽度：gfx9 系列（含本机的 gfx942）返回 64，其他架构返回 32；第 106 行的 <code>get_warp_id()</code> 也写的是 <code>threadIdx.x / get_warp_size()</code>，不是 <code>/ 64</code>。本课程只编 <code>--offload-arch=gfx942</code>，所以 64 是确定的，作业骨架里的 <code>kLanes = 64</code> 等常量就是这样来的。两条原则合起来：<strong>运行期代码（循环、下标）用 <code>warpSize</code>；编译期布局（分布、数组长度）用 <code>get_warp_size()</code>，或者写 64 并加上 <code>static_assert(… == ck_tile::get_warp_size())</code> 让换架构时编译报错</strong>，而不是悄悄算错。</p>
+  <p>它按<em>编译目标</em>决定宽度：gfx9 系列（含本机的 gfx942）返回 64，其他架构返回 32。第 106 行的 <code>get_warp_id()</code> 写的也是 <code>threadIdx.x / get_warp_size()</code>，不是 <code>/ 64</code>。本课程只编 <code>--offload-arch=gfx942</code>，所以 64 是确定的，作业骨架里的 <code>kLanes = 64</code> 等常量就是这样来的。</p>
+  <p>两条原则合起来：<strong>运行期代码（循环、下标）用 <code>warpSize</code>；编译期布局（分布、数组长度）用 <code>get_warp_size()</code>，或者写 64 并加上 <code>static_assert(… == ck_tile::get_warp_size())</code></strong>。这样换架构时会编译报错，而不是悄悄算错。</p>
 </div>
 <div class="callout pitfall" data-title="1 个 P 维时，warp id 根本不参与">
-  <p>只写 1 个 P 维时，线程只按 lane id 区分。block 里如果有不止一个 wavefront，它们的 lane id 都是 0–63，于是<strong>每个 wavefront 拿到的是同一批元素</strong>。本机实测：128 线程的 block，用 1 个 P 维、H = (128, 2)（P 认领第 0 段、Y 认领第 1 段）存一个 256 元素的 tile，结果元素 128–255 <em>没有任何线程写</em>；换成 load 再看每个线程拿到了什么，线程 64（wavefront 1 的 lane 0）拿到的是元素 0、1，与线程 0 完全相同——元素 0–127 被两个 wavefront 各处理了一遍。只有 lane id 能对上 h<sub>0</sub> &lt; 64 的那部分有人负责。所以：<strong>block 只有一个 wavefront 时，1 个 P 维够用；block 有多个 wavefront、又要它们分摊不同的数据时，需要 2 个 P 维</strong>，并让 P<sub>0</sub>（warp id）认领 H 中代表“第几个 wavefront”的那一段。</p>
+  <p>只写 1 个 P 维时，线程只按 lane id 区分。block 里如果有不止一个 wavefront，它们的 lane id 都是 0–63，于是<strong>每个 wavefront 拿到的是同一批元素</strong>。</p>
+  <p>本机实测：128 线程的 block，用 1 个 P 维、H = (128, 2)（P 认领第 0 段、Y 认领第 1 段）存一个 256 元素的 tile，结果元素 128–255 <em>没有任何线程写</em>。换成 load 再看每个线程拿到了什么：线程 64（wavefront 1 的 lane 0）拿到的是元素 0、1，与线程 0 完全相同，元素 0–127 被两个 wavefront 各处理了一遍。只有 h<sub>0</sub> &lt; 64、能和某个 lane id 对上的那部分有人负责。</p>
+  <p>所以：<strong>block 只有一个 wavefront 时，1 个 P 维够用；block 有多个 wavefront、又要它们分摊不同的数据时，需要 2 个 P 维</strong>，并让 P<sub>0</sub>（warp id）认领 H 中代表“第几个 wavefront”的那一段。</p>
 </div>
 <p><strong>本节的例子。</strong>block 只有 1 个 wavefront，所以 1 个 P 维（lane）就够。512 个元素拆成 H = (2, 64, 4)：第 0 段“第几轮”给 Y<sub>0</sub>，第 1 段“第几个 lane”给 P<sub>0</sub>，第 2 段“轮内第几个”给 Y<sub>1</sub>：</p>
 <pre><code class="language-cpp">// 节选自 §3.4 的完整 kernel
@@ -678,7 +710,7 @@ constexpr auto dist = make_static_tile_distribution(
                                tuple&lt;sequence&lt;1&gt;&gt;,                    //      … minor 1（第 1 段）
                                sequence&lt;1, 1&gt;,                        // Y0、Y1 → major 1 …
                                sequence&lt;0, 2&gt;&gt;{});                    //      … minor 0、2（第 0、2 段）</code></pre>
-<p><code>make_static_tile_distribution</code> 把编码“编译”成真正的分布对象（一组编译期的坐标变换）。读法：P<sub>0</sub> 的 major/minor 各是一个只含一项的 sequence，因为这个 P 维只认领一段；两个 Y 的 major 都是 1、minor 分别是 0 和 2。检查一遍：三段都被认领，且各只一次。</p>
+<p><code>make_static_tile_distribution</code> 把编码“编译”成真正的分布对象，即一组编译期的坐标变换。这段编码的含义是：P<sub>0</sub> 的 major 和 minor 各是只含一项的 sequence，因为这个 P 维只认领一段（major 1、minor 1，即 X0 的第 1 段）。Y<sub>0</sub> 和 Y<sub>1</sub> 的 major 都是 1，minor 分别是 0 和 2，即 X0 的第 0 段和第 2 段。数一遍：H 的三段恰好各被认领一次，没有遗漏也没有重复。</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 262" role="img" aria-labelledby="fig33-t">
     <title id="fig33-t">H = (2, 64, 4) 的分布：Y0 选第几轮，P0 = lane 选第几组 4 个，Y1 选组内第几个</title>
@@ -731,17 +763,21 @@ constexpr auto dist = make_static_tile_distribution(
   </svg>
   <figcaption><b>图 3.3</b>例子的分布。本机实测（每个线程把 “线程号×100 + 缓冲区下标” 写进自己负责的元素再读回）：线程 0 负责 0–3 与 256–259，线程 1 负责 4–7 与 260–263，……，线程 63 负责 252–255 与 508–511，与图一致。</figcaption>
 </figure>
-<p>为什么这样排？看同一轮里的一条指令：64 个 lane 各取 4 个连续 float（16 字节），lane 之间首尾相接，合起来是 1024 个连续字节——完全合并的访存。CK-Tile 为每个 Y 维算一个“安全向量长度”，再从在内存里连续（stride 为 1）的 Y 维中挑安全向量长度最大的那个做向量访问（<code>core/tensor/tile_window_base.hpp</code> 第 152–170 行）。对认领 X 最低位一段的 Y 维，安全向量长度 = gcd(视图承诺的向量长度, 这一段的长度)，而且视图必须承诺最后一维 stride 为 1——这就是 §3.1 最后两个参数的用处。这里选中的是 Y<sub>1</sub>：它认领的 h<sub>2</sub> 正是 X0 最低位的一段，gcd(4, 4) = 4，即 4 个 float = 16 字节，正是 a1 E4 里 float 的那个数字。本机实测：视图承诺 8 时结果仍是 gcd(8, 4) = 4，承诺 2 时是 2，不承诺时是 1。惯例上把这一维放在 Y 的最后，这样它在线程缓冲区里也是连续的。</p>
+<p>这样排，是为了让同一轮里的一条指令完全合并：64 个 lane 各取 4 个连续 float（16 字节），lane 之间首尾相接，合起来是 1024 个连续字节。Y<sub>1</sub> 认领的 h<sub>2</sub> 是 X0 最低位的一段，在内存里连续，长度 4。再加上 §3.1 视图承诺的向量长度 4 和 stride 1，CK-Tile 就沿 Y<sub>1</sub> 选出每次 4 个 float（16 字节）的向量访存。这个 4 正是 a1 E4 里 <code>vec16&lt;float&gt;()</code> 的结果：16 字节装 4 个 float。惯例上把这一维放在 Y 的最后，这样它在线程缓冲区里也是连续的。</p>
+<details class="deep"><summary>CK-Tile 怎样选出向量长度</summary>
+  <p>CK-Tile 为每个 Y 维算一个“安全向量长度”，再从在内存里连续（stride 为 1）的 Y 维中，挑安全向量长度最大的那个做向量访问（<code>core/tensor/tile_window_base.hpp</code> 第 152–170 行）。对认领 X 最低位一段的 Y 维，安全向量长度 = gcd(视图承诺的向量长度, 这一段的长度)，而且视图必须承诺最后一维 stride 为 1，这就是 §3.1 最后两个参数的用处。</p>
+  <p>本例选中的是 Y<sub>1</sub>：gcd(4, 4) = 4。本机实测：视图承诺 8 时结果仍是 gcd(8, 4) = 4，承诺 2 时是 2，不承诺时是 1。</p>
+</details>
 <p>设计一个 encoding 时，可以按这张清单自查：</p>
 <ol>
   <li>每个 X 维的 H 各段之积 = tile 在这一维的长度。</li>
   <li>H 的每一段恰好被一个 P 或一个 Y 认领，不重不漏。</li>
   <li>P 维的个数与 block 的形状相符：block 只有一个 wavefront 用 1 个，多个 wavefront 用 2 个（warp, lane）。</li>
-  <li>P<sub>0</sub>=warp 认领的段长之积 = block 里的 wavefront 数；lane 认领的段长之积 = 64（即 <code>get_warp_size()</code>）。否则要么有线程闲着，要么有线程的坐标落到 H 的范围之外。</li>
-  <li>让一个 Y 维认领 X 最低位的一段（惯例上放在 Y 的最后），它在内存里才连续、才能向量化。</li>
+  <li>P<sub>0</sub>=warp 认领的段长之积 = block 里的 wavefront 数；lane 认领的段长之积 = 64（即 <code>get_warp_size()</code>）。段长之积小于实际的 wavefront 数或 lane 数时，多出来的线程算出的坐标超出 H 的范围，会读写到不该碰的位置；大于时，H 里有一部分坐标没有线程对应，那些元素没人处理。</li>
+  <li>对本课的一维连续数组，让一个 Y 维认领 X0 最低位的一段，并让视图承诺最后一维 stride 为 1，这一段才能向量化。推广到行主序二维 tile 时，要选列维（最后一维）里的连续段：逻辑坐标相邻，不一定内存相邻。惯例上把选中的 Y 维放在 Y 的最后。</li>
 </ol>
 <div class="callout note" data-title="R 维：让多个 wavefront 拿到同一份数据">
-  <p>R 在 a2 里用不到，但会在后面的 GEMM 中出现（例如每个 wavefront 都需要同一块 B）。下面是一个本机运行过的例子：128 线程（2 个 wavefront），一个 128 元素的 tile，两个 wavefront 各持有<strong>完整的一份</strong>。它有 2 个 P 维：P<sub>0</sub>（warp id）认领 R 的第 0 段，P<sub>1</sub>（lane id）认领 H 的第 0 段。</p>
+  <p>R 在 a2 里用不到，但会在后面的 GEMM 中出现，例如每个 wavefront 都需要同一块 B。下面是一个本机运行过的例子：128 线程（2 个 wavefront），一个 128 元素的 tile，两个 wavefront 各持有<strong>完整的一份</strong>。它有 2 个 P 维：P<sub>0</sub>（warp id）认领 R 的第 0 段，P<sub>1</sub>（lane id）认领 H 的第 0 段。</p>
 <pre data-snip="s3_2r"><code class="language-cpp">using RepEnc = tile_distribution_encoding&lt;
     sequence&lt;2&gt;,                        // R：复制 2 份
     tuple&lt;sequence&lt;64, 2&gt;&gt;,             // H：X0 = 64 × 2
@@ -760,9 +796,9 @@ constexpr auto dist = make_static_tile_distribution(
     tuple&lt;sequence&lt;0, 0&gt;&gt;,                     //   … 各自的第 0 段
     sequence&lt;2&gt;,                               // Y0 → X1 的 H …
     sequence&lt;1&gt;&gt;;                              //   … 第 1 段</code></pre>
-  <p>一个 P 维认领的多段，也像行主序坐标一样拆分 lane id，<strong>先列出的段是高位</strong>：lane = 行 × 16 + 列组。实测 lane 0–15 拿第 0 行，lane 16–31 拿第 1 行……lane 17 拿第 1 行的第 4–7 列。</p>
+  <p>一个 P 维认领的多段，也像行主序坐标一样拆分 lane id，<strong>先列出的段是高位</strong>：lane = 行 × 16 + 列组。实测 lane 0–15 拿第 0 行，lane 16–31 拿第 1 行，……，lane 17 拿第 1 行的第 4–7 列。</p>
 </div>
-<p>下面的小部件把“一维 tile、H 拆成 (wavefront 数, lane 数, 每线程个数) 三段”这一类分布画了出来，你可以改参数、点格子看任意元素的归属，并切换到“1 个 P 维”观察 warp id 不参与时发生了什么。lane 数允许选比 64 小的值，只是为了让图看得清；真实硬件上一个 wavefront 永远是 64 个 lane。</p>
+<p>下面的小部件画出了“一维 tile、H 拆成 (wavefront 数, lane 数, 每线程个数) 三段”这一类分布。你可以改参数、点格子看任意元素的归属，并切换到“1 个 P 维”，观察 warp id 不参与时发生了什么。lane 数允许选比 64 小的值，只是为了让图看得清；真实硬件上一个 wavefront 永远是 64 个 lane。</p>
 <figure class="widget" data-widget="tile-dist">
   <div class="widget-head"><b>一维 tile distribution：每个元素归谁</b><span class="hint">改参数；点格子或拖“线程”查看归属</span></div>
   <div class="widget-controls">
@@ -799,11 +835,11 @@ make_tile_window(const TensorView_&amp; tensor_view,
                  const multi_index&lt;TensorView_::get_num_of_dimension()&gt;&amp; origin,
                  const StaticTileDistribution_&amp; tile_distribution,
                  number&lt;NumCoord&gt; = {})</code></pre>
-  <p>四个参数：① 视图；② <strong>窗口长度</strong>，一个装着 <code>number&lt;…&gt;</code> 的 tuple——编译期常量，必须与分布的 tile 大小（H 各段之积）一致；③ <strong>原点</strong>，类型是 <code>multi_index&lt;维数&gt;</code>（即 <code>ck_tile::array&lt;index_t, 维数&gt;</code>），是运行期的值，通常直接写成花括号列表 <code>{…}</code>；④ 分布。第五个参数是性能调优用的，保持默认。</p>
+  <p>四个参数：① 视图；② <strong>窗口长度</strong>，一个装着 <code>number&lt;…&gt;</code> 的 tuple，是编译期常量，必须与分布的 tile 大小（H 各段之积）一致；③ <strong>原点</strong>，类型是 <code>multi_index&lt;维数&gt;</code>，它是 <code>ck_tile::array&lt;index_t, 维数&gt;</code> 的别名，即一个定长的坐标数组。原点是运行期的值，通常直接写成花括号列表 <code>{…}</code>；④ 分布。第五个参数用于性能调优，保持默认。</p>
 </div>
-<p>原点是这个窗口第一个元素在视图中的坐标。一维时就是“前面所有 block 已经处理了多少个元素”——和 Lab 1 的 <code>blockIdx.x * blockDim.x</code> 是同一个思路，只是现在一个 block 负责的是 kTile 个元素，不是 blockDim.x 个。</p>
+<p>原点是这个窗口第一个元素在视图中的坐标。一维时就是“前面所有 block 已经处理了多少个元素”。这和 Lab 1 的 <code>blockIdx.x * blockDim.x</code> 是同一个思路，只是现在一个 block 负责 kTile 个元素，不是 blockDim.x 个。</p>
 <div class="callout pitfall" data-title="blockIdx.x 是 unsigned">
-  <p>原点要求 <code>index_t</code>（有符号 32 位）。如果直接写 <code>{blockIdx.x * kTile}</code>，乘积是 <code>unsigned int</code>，而花括号初始化<strong>禁止窄化转换</strong>（unsigned → int 可能丢值），编译失败：</p>
+  <p>原点要求 <code>index_t</code>（有符号 32 位）。如果直接写 <code>{blockIdx.x * kTile}</code>，乘积是 <code>unsigned int</code>，而花括号初始化<strong>禁止窄化转换</strong>（unsigned → int 可能丢值），于是编译失败：</p>
 <pre><code class="language-bash">error: non-constant-expression cannot be narrowed from type 'unsigned int' to 'value_type' (aka 'int') in initializer list [-Wc++11-narrowing]
 note: insert an explicit cast to silence this issue</code></pre>
   <p>照提示先 <code>static_cast&lt;index_t&gt;(blockIdx.x)</code> 再乘。</p>
@@ -830,18 +866,18 @@ note: insert an explicit cast to silence this issue</code></pre>
     <text x="510" y="140" font-size="11" text-anchor="middle" class="mono">n</text>
     <text x="20" y="160" font-size="12">三个窗口长度相同（编译期），原点不同（运行期）；同一个 block 的 wx 与 wy 用同一个原点和同一个分布。</text>
   </svg>
-  <figcaption><b>图 3.4</b>窗口沿视图排开。最后一个窗口有 236 个元素落在 [n, 1536) 之外，它们的访问由 §3.1 的机制屏蔽，kernel 里不需要特殊处理。</figcaption>
+  <figcaption><b>图 3.4</b>窗口沿视图排开。最后一个窗口覆盖 1024 到 1535，其中 1300 到 1535 这 236 个元素的下标 ≥ n，超出了数组末尾。它们的访问由 §3.1 的机制屏蔽，kernel 里不需要特殊处理。</figcaption>
 </figure>
-<p>一个 kernel 里可以有任意多个窗口。逐元素运算时，所有输入、输出的窗口用同一个原点和同一个分布，于是同一个线程在每个窗口里拿到的都是“相同下标”的元素——这正是 <code>c[i] = a[i] + b[i]</code> 里三个 <code>[i]</code> 相同的含义。（窗口也可以移动：<code>move_tile_window</code> 在后面的 GEMM 里用来沿 K 方向滑动，本课用不到。）</p>
+<p>一个 kernel 里可以有任意多个窗口。逐元素运算时，所有输入、输出的窗口用同一个原点和同一个分布，于是同一个线程在每个窗口里拿到的都是“相同下标”的元素。这正是 <code>c[i] = a[i] + b[i]</code> 里三个 <code>[i]</code> 相同的含义。窗口也可以移动：<code>move_tile_window</code> 在后面的 GEMM 里用来沿 K 方向滑动，本课用不到。</p>
 
 <p class="sec-assign">对应 a2 的 a2-3（窗口原点与 3 个窗口）。</p>
 
 <h3 id="s3-4"><span class="sec">§3.4</span>load_tile / distributed tensor / sweep_tile / store_tile</h3>
 <p>前三件都只是描述。真正搬数据的是这几个函数：</p>
 <ul>
-  <li><strong><code>load_tile(window)</code></strong>：按窗口的分布，把本线程负责的元素从显存读进寄存器，返回一个 <strong>distributed tensor</strong>（类型 <code>static_distributed_tensor&lt;T, 分布&gt;</code>）。它是“整个 tile 在所有线程手里的分布式表示”；从单个线程看，它就是一个长度为 ∏Y 的寄存器数组（thread buffer），例子里是 2 × 4 = 8 个 float。</li>
-  <li><strong><code>make_static_distributed_tensor&lt;T&gt;(dist)</code></strong>：按分布创建一个 distributed tensor（元素类型 T 必须显式写在尖括号里），通常用来装输出。它的寄存器<strong>没有初始化</strong>（不是清零），要先把每个元素写一遍再用。</li>
-  <li><strong><code>sweep_tile(t, f)</code></strong>：对本线程持有的<em>每一个</em>元素调用一次 <code>f(idx)</code>。<code>idx</code> 是一个编译期的“分布式下标”（类型里编码了 Y 坐标），用它读 <code>t[idx]</code>、写 <code>t(idx)</code>——与 §2.2 的 array 同一个习惯。同一个 <code>idx</code> 可以用在<strong>任何一个分布相同</strong>的 distributed tensor 上，表示“同一个位置”。</li>
+  <li><strong><code>load_tile(window)</code></strong>：按窗口的分布，把本线程负责的元素从显存读进寄存器，返回一个 <strong>distributed tensor</strong>（类型 <code>static_distributed_tensor&lt;T, 分布&gt;</code>）。它是“整个 tile 在所有线程手里的分布式表示”。从单个线程看，它就是一个寄存器数组（thread buffer），长度等于所有 Y 维长度之积，例子里是 2 × 4 = 8 个 float。</li>
+  <li><strong><code>make_static_distributed_tensor&lt;T&gt;(dist)</code></strong>：按分布创建一个 distributed tensor，通常用来装输出。元素类型 T 必须显式写在尖括号里。本机的 CK-Tile 默认把元素初始化为 0；本例随后会逐个写入最终结果，所以初值无所谓。</li>
+  <li><strong><code>sweep_tile(t, f)</code></strong>：对本线程持有的<em>每一个</em>元素调用一次 <code>f(idx)</code>。<code>idx</code> 是一个编译期的“分布式下标”，类型里编码了 Y 坐标。用它读 <code>t[idx]</code>、写 <code>t(idx)</code>，与 §2.2 的 array 同一个习惯。同一个 <code>idx</code> 可以用在<strong>任何一个分布相同</strong>的 distributed tensor 上，表示“同一个位置”。</li>
   <li><strong><code>store_tile(window, t)</code></strong>：把 distributed tensor 按窗口的分布写回显存。</li>
 </ul>
 <figure class="diagram">
@@ -888,9 +924,17 @@ CK_TILE_HOST_DEVICE constexpr const DataType&amp; operator[](TileDistributedIndi
 
     return thread_buf_[number&lt;ThreadTensorDesc{}.calculate_offset(y_idx) / PackedSize&gt;{}];
 }</code></pre>
-  <p>和 tuple 的 <code>at(number&lt;I&gt;)</code> 一样，参数没有名字——下标完全在类型 <code>TileDistributedIndices</code> 里。由它在<strong>编译期</strong>算出 Y 坐标、再算出寄存器数组里的偏移，最后用 <code>number&lt;偏移&gt;</code> 去取 <code>thread_buf_</code>。这就是 §2 开头说的“寄存器数组只能用编译期下标”在 CK-Tile 里的落实。第 126 行的 <code>operator()</code> 是对应的可写版本。</p>
+  <p>和 tuple 的 <code>at(number&lt;I&gt;)</code> 一样，参数没有名字，下标完全在类型 <code>TileDistributedIndices</code> 里。由它在<strong>编译期</strong>算出 Y 坐标，再算出寄存器数组里的偏移，最后用 <code>number&lt;偏移&gt;</code> 去取 <code>thread_buf_</code>。第 116 行的 <code>static_assert</code> 要求下标是静态的，就是为了在编译期确定这个偏移，让每个元素固定在寄存器里（§2 开头）。第 126 行的 <code>operator()</code> 是对应的可写版本。</p>
 </div>
-<p>其余三个函数的签名很短，值得各看一眼：<code>load_tile.hpp</code> 第 21–27 行（转手调用 <code>tile_window.load()</code>）、<code>static_distributed_tensor.hpp</code> 第 141–146 行（<code>make_static_distributed_tensor</code>）、<code>store_tile.hpp</code> 第 64–77 行（注意它的窗口参数是<strong>非 const 引用</strong>，所以要传一个普通的局部变量）。</p>
+<p>其余三个函数的签名也值得看一眼：</p>
+<ul>
+  <li><code>load_tile.hpp</code> 第 21–27 行：<code>load_tile</code> 只是转手调用 <code>tile_window.load()</code>。</li>
+  <li><code>static_distributed_tensor.hpp</code> 第 141–146 行：<code>make_static_distributed_tensor</code>。</li>
+  <li><code>store_tile.hpp</code> 第 64–77 行：注意它的窗口参数是<strong>非 const 引用</strong>，要传一个普通的局部变量，不能传 const 对象。</li>
+</ul>
+<details class="deep"><summary>为什么汇编里看不到输出 tile 的清零</summary>
+  <p><code>thread_buffer</code> 的构造函数写的是 <code>data{}</code>（<code>core/container/thread_buffer.hpp</code> 第 44 行），所以元素确实被初始化为 0。但本例每个元素随后都会被覆盖，编译器就把清零指令优化掉了。对象的初始化语义和最终生成的指令要分开看：不能因为汇编里没有清零，就认为对象没有初始化。</p>
+</details>
 <p>下面是完整的 kernel 与启动函数，四件套各占几行：</p>
 <pre data-snip="s3_4"><code class="language-cpp">#include &lt;hip/hip_runtime.h&gt;
 #include "ck_tile/core.hpp"
@@ -924,7 +968,7 @@ __global__ void scale_kernel(const float* x, float* y, float alpha, index_t n) {
 
   // §3.4 load → 逐元素计算 → store
   auto tx = load_tile(wx);                                 // 本线程的 8 个元素进寄存器
-  auto ty = make_static_distributed_tensor&lt;float&gt;(dist);   // 同一分布、未初始化的 tile
+  auto ty = make_static_distributed_tensor&lt;float&gt;(dist);   // 同一分布的输出 tile，下面逐个赋值
   sweep_tile(tx, [&amp;](auto idx) { ty(idx) = alpha * tx[idx]; });
   store_tile(wy, ty);
 }
@@ -933,23 +977,25 @@ void launch_scale(const float* x, float* y, float alpha, int n, hipStream_t stre
   const int grid = (n + kTile - 1) / kTile;   // 每个 block 一个窗口，向上取整
   scale_kernel&lt;&lt;&lt;grid, kThreads, 0, stream&gt;&gt;&gt;(x, y, alpha, n);
 }</code></pre>
-<p><strong>本机运行结果</strong>（MI308X，空闲 GPU；输出数组两侧各留 64 个元素当哨兵、内部先填 NaN——原理与 <a href="../lab0-env/tutorial.html#s1-3">Lab 0 §1.3</a> 的哨兵区相同，只是判分 harness 的哨兵区是前后各 256 KiB，这里自己做实验只留了 64 个元素）：n = 1、3、64、511、512、1023、4097、1000003 全部逐位正确，哨兵完好。用 <code>--save-temps</code> 查看汇编，整个 kernel 只有两条读、两条写，正好对应 2 轮：</p>
+<p><strong>本机运行结果</strong>（MI308X，空闲 GPU）：n = 1、3、64、511、512、1023、4097、1000003 全部逐位正确，哨兵完好。实验时输出数组两侧各留了 64 个元素当哨兵，内部先填 NaN，原理与 <a href="../lab0-env/tutorial.html#s1-3">Lab 0 §1.3</a> 的哨兵区相同，只是规模小（判分 harness 用前后各 256 KiB）。用 <code>--save-temps</code> 查看汇编，整个 kernel 只有两条读、两条写，正好对应 2 轮：</p>
 <pre><code class="language-bash">buffer_load_dwordx4  v[0:3], v8, s[8:11], 0 offen
 buffer_load_dwordx4  v[4:7], v8, s[8:11], 0 offen offset:1024
 buffer_store_dwordx4 v[0:3], v8, s[0:3], 0 offen
 buffer_store_dwordx4 v[4:7], v8, s[0:3], 0 offen offset:1024</code></pre>
 <p>第二轮的地址只是第一轮加上立即数 <code>offset:1024</code>（= 64 lane × 4 float × 4 字节），连地址计算都在编译期折叠掉了。§1.1 那段手写的 <code>if</code>/<code>else</code> 尾部处理在这里不存在：最后一个窗口越界的部分由 buffer 指令屏蔽。</p>
 <div class="callout warn" data-title="例子与 a2 的区别">
-  <p>这个例子的 block 只有 <strong>1 个</strong> wavefront，所以 1 个 P 维正确。a2 的 block 有 <strong>4 个</strong> wavefront（kWarps = 4），照抄这里的 encoding 会掉进 §3.2 的那个坑。动手前先按 §3.2 的清单在纸上画出 a2 的 1024 个元素怎样分给 4 × 64 个线程，或者在小部件 3.1 里用小参数试一试。另外 a2 有两个输入、一个输出：想一想各需要几个窗口、几次 load，以及本节开头关于 <code>idx</code> 的那条规则在这里怎么用。</p>
+  <p>这个例子的 block 只有 <strong>1 个</strong> wavefront，所以 1 个 P 维正确。a2 的 block 有 <strong>4 个</strong> wavefront（<code>kWarps = 4</code>），照抄这里的 encoding 会掉进 §3.2 的那个坑。动手前，先按 §3.2 的清单在纸上画出 a2 的 1024 个元素怎样分给 4 × 64 个线程，或者在小部件 3.1 里用小参数试一试。</p>
+  <p>另外，a2 有两个输入、一个输出：想一想各需要几个窗口、几次 load，以及本节开头关于 <code>idx</code> 的那条规则在这里怎么用。</p>
 </div>
 
 <div class="callout note" data-title="Lab 1 §6 的工具照常可用">
-  <p>CK-Tile kernel 归根到底还是你自己写的 <code>__global__</code> 函数，<a href="../lab1-hip-basics/tutorial.html#s6">Lab 1 §6</a> 的调试与剖析工具（kernel 里的 <code>printf</code>、<code>HIP_LAUNCH_BLOCKING=1</code>、<code>-Rpass-analysis=kernel-resource-usage</code>、rocprofv3）都照常使用。rocprofv3 的 trace 里 kernel 名就是你的函数名，a2 的就是 <code>ck_vector_add_kernel(float const*, float const*, float*, int)</code>；模板 kernel 会带上模板参数，例如 <code>void my_kernel&lt;4&gt;(float const*, float*, int, int)</code>，同一个模板的不同实例各占一行；以 <code>__amd_rocclr_</code> 开头的仍是运行时的拷贝、填充 kernel。</p>
+  <p>CK-Tile kernel 归根到底还是你自己写的 <code>__global__</code> 函数，<a href="../lab1-hip-basics/tutorial.html#s6">Lab 1 §6</a> 的调试与剖析工具都照常使用：kernel 里的 <code>printf</code>、<code>HIP_LAUNCH_BLOCKING=1</code>、<code>-Rpass-analysis=kernel-resource-usage</code>、rocprofv3。</p>
+  <p>rocprofv3 的 trace 里 kernel 名就是你的函数名，a2 的是 <code>ck_vector_add_kernel(float const*, float const*, float*, int)</code>。模板 kernel 会带上模板参数，例如 <code>void my_kernel&lt;4&gt;(float const*, float*, int, int)</code>，同一个模板的不同实例各占一行。以 <code>__amd_rocclr_</code> 开头的仍是运行时的拷贝、填充 kernel。</p>
 </div>
 <p class="sec-assign">对应 a2 的 a2-4（load、逐元素相加、store）。</p>
 
 <h3 id="s3-5"><span class="sec">§3.5</span>与 Lab 1 a1 的逐行对照</h3>
-<p>最后把 Lab 1 a1 Part A 的手写 vector add 与 a2 的 CK-Tile 写法放在一起。左列每一项都是你在 Lab 1 亲手写过的；右列说明在 CK-Tile 里它变成了什么、由谁来做。</p>
+<p>最后把 Lab 1 a1 Part A 的手写 vector add 与 Lab 2 a2 的 CK-Tile 写法放在一起。左列每一项都是你在 Lab 1 亲手写过的；右列说明在 CK-Tile 里它变成了什么、由谁来做。</p>
 <div class="table-wrap">
 <table class="facts map">
   <caption>同一件事的两种写法</caption>
@@ -968,7 +1014,8 @@ buffer_store_dwordx4 v[4:7], v8, s[0:3], 0 offen offset:1024</code></pre>
   </tbody>
 </table>
 </div>
-<p>注意“谁来算”的变化：左列每一行都是运行期的整数运算，写错了要靠测试发现；右列除了窗口原点和视图的指针、长度，全是编译期的类型描述，一部分错误（长度与 stride 个数不一致、P 维个数超出 1–2、往只读视图写）在编译期就会被拦下。但不是全部：在 1 个和 2 个 P 维之间选错，编译器发现不了——§3.2 的那个坑能编译、能运行，只是结果静默出错。代价是你必须先在纸上想清楚分布——这正是 a2 的核心。</p>
+<p>注意“谁来算”的变化。CK-Tile 把布局规则、每个线程的元素个数和线程内的遍历结构写成了编译期描述；线程身份、窗口地址、实际的读写和浮点运算，仍然在 kernel 运行时执行。</p>
+<p>好处是一部分结构错误在编译期就会被拦下，例如长度与 stride 个数不一致、P 维个数超出 1–2、往只读视图写。但不是全部：在 1 个和 2 个 P 维之间选错，编译器发现不了，§3.2 的那个坑能编译、能运行，只是结果静默出错。所以写代码之前，要先在纸上想清楚分布，这正是 a2 的核心。</p>
 
 <div class="assignment-card" data-assign="a2" data-lab="lab2-cktile-intro" data-path="lab2-cktile-intro/a2-ck-vector-add/ck_vector_add.hip" data-title="用 CK-Tile 写 vector add">
   <p>在已给出的 <code>va</code> 基础上构造 <code>vb</code>、<code>vc</code>（a2-1，§3.1）；写出 6 个模板参数的 <code>tile_distribution_encoding</code>，让 4 个 wavefront × 64 lane × 每线程 4 个 float 恰好覆盖 1024 个元素（a2-2，§3.2）；算出窗口原点并建 3 个窗口（a2-3，§3.3）；load、<code>sweep_tile</code> 逐元素相加、store（a2-4，§3.4）。不要写 <code>if (i &lt; n)</code>。带宽用例要求达到同进程 D2D 拷贝带宽的 55%。</p>
@@ -977,26 +1024,27 @@ buffer_store_dwordx4 v[4:7], v8, s[0:3], 0 offen offset:1024</code></pre>
 
 <!-- ============================================================ §4 -->
 <h2 id="s4"><span class="sec">§4</span>读源码练习指引</h2>
-<p>做完 a2 之后，沿着你调用过的函数往下读，是理解 CK-Tile 最快的办法。建议按 <code>tensor_view.hpp</code> → <code>tile_window.hpp</code> → <code>load_tile.hpp</code> 的顺序读（都在 <code>/opt/rocm/include/ck_tile/core/tensor/</code>），每个文件带着下面三个问题去读。不必每一行都懂：遇到看不懂的坐标变换（adaptor、transform）先当黑盒，记下“它输入什么、输出什么”即可。这些问题不计分，也没有标准答案文件；答不上来的，可以在 Lab 3 学完更多机制后再回来看。</p>
+<p>做完 a2 之后，沿着你调用过的函数往下读，是理解 CK-Tile 最快的办法。建议按 <code>tensor_view.hpp</code> → <code>tile_window.hpp</code> → <code>load_tile.hpp</code> 的顺序读（都在 <code>/opt/rocm/include/ck_tile/core/tensor/</code>），每个文件带着下面三个问题去读。找函数定义时，可以用编辑器的“跳转到定义”，也可以用 §1.3 的 grep 方法。</p>
+<p>不必每一行都懂：遇到看不懂的坐标变换（adaptor、transform）先当黑盒，记下“它输入什么、输出什么”即可。这些问题不计分，也没有标准答案文件；答不上来的，可以学完 Lab 3 再回来看。</p>
 
 <h3 id="s4-1"><span class="sec">§4.1</span><code>tensor_view.hpp</code></h3>
 <ol class="qlist">
-  <li>第 461–486 行：<code>make_naive_tensor_view</code> 返回的对象由哪两部分组成？buffer view 的“长度”来自 <code>desc.get_element_space_size()</code>。对于一个 rows × cols、但每行间隔 ld（ld &gt; cols）的二维视图，这个长度是 rows × cols 吗？越界屏蔽会因此出现什么“漏网”的情况？</li>
+  <li>第 461–486 行：<code>make_naive_tensor_view</code> 返回的对象由哪两部分组成？buffer view 的“长度”来自 <code>desc.get_element_space_size()</code>。对于一个 rows × cols、每行间隔 ld（ld &gt; cols）的二维视图，这个长度是 rows × cols 吗？在这种视图上，哪些越界访问会被硬件屏蔽，哪些不会被屏蔽、而是读写到了别的位置？</li>
   <li>第 81–90 行 <code>get_vectorized_elements</code>：它把坐标 <code>coord</code> 拆成了哪几样东西交给 <code>buf_.get</code>？其中哪一样决定“这次访问是否有效”？对 naive 视图，它在编译期是什么值（回看 §3.1）？</li>
-  <li>第 37–40 行的模板参数 <code>DstInMemOp_</code> 默认是 <code>set</code>。到 <code>core/arch/arch.hpp</code> 第 55–61 行看它还能取哪些值，再找到本文件中用到它的 <code>update_vectorized_elements</code>（第 366 行起）。什么样的算子需要“写回时做原子加”而不是直接覆盖？</li>
+  <li>第 37–40 行的模板参数 <code>DstInMemOp_</code> 默认是 <code>set</code>。到 <code>core/arch/arch.hpp</code> 第 55–61 行看它还能取哪些值，再在本文件里找用到它的地方，例如 <code>update_vectorized_elements</code>（第 366 行起），看不同的值怎样改变写回的方式。什么样的算子需要“写回时做原子加”，而不是直接覆盖？</li>
 </ol>
 
 <h3 id="s4-2"><span class="sec">§4.2</span><code>tile_window.hpp</code></h3>
 <ol class="qlist">
   <li>第 919 行和第 1089 行各有一个 <code>make_tile_window</code>，参数有什么不同？用第 1089 行那种（不带分布）创建的窗口，能直接 <code>load_tile</code> 吗？为什么？</li>
-  <li>构造函数（第 66–111 行）在第 78–81 行用 <code>get_partition_index</code>（§2.4 摘过它的实现）和全 0 的 Y 坐标算出了一个坐标，第 83–84 行又加上了 <code>window_origin</code>。这个结果在 Lab 1 里对应你手写的哪个量？它在什么时候算——每次 load 时，还是创建窗口时？</li>
-  <li><code>load_tile(window)</code> 先到第 113–121 行那个不带参数的 <code>load()</code>，再由它调用第 236–293 行的版本。后者有三层 <code>static_for</code>：第 247 行逐个坐标，第 252 行每次迭代发出一条向量访存，第 263 行按 <code>Traits::ScalarPerVector</code>（来自 <code>tile_window_base.hpp</code> 第 152–170 行）把这条向量拆进线程缓冲区。对 §3.4 的例子，总共要访问几次？与 §3.4 看到的指令条数对得上吗？</li>
+  <li>构造函数（第 66–111 行）在第 78–81 行用 <code>get_partition_index</code>（§2.4 摘过它的实现）和全 0 的 Y 坐标算出了一个坐标，第 83–84 行又加上了 <code>window_origin</code>。这个结果在 Lab 1 里对应你手写的哪个量（提示：和 <code>blockIdx.x * blockDim.x + threadIdx.x</code> 有关）？它是每次 load 时重新算，还是创建窗口时一次算好？</li>
+  <li><code>load_tile(window)</code> 先到第 113–121 行那个不带参数的 <code>load()</code>，再由它调用第 236–293 行的版本。后者有三层 <code>static_for</code>：第 247 行遍历预先算好的坐标；第 252 行对每次访问发出一条向量访存；第 263 行把读回的这个向量拆成 <code>Traits::ScalarPerVector</code> 个元素，逐个写进线程缓冲区。<code>ScalarPerVector</code> 是 CK-Tile 算出的每次访存的元素数，来自 <code>tile_window_base.hpp</code> 第 152–170 行。问题：对 §3.4 的例子，每个线程一共访问几次？与 §3.4 看到的指令条数对得上吗？</li>
 </ol>
 
 <h3 id="s4-3"><span class="sec">§4.3</span><code>load_tile.hpp</code></h3>
 <ol class="qlist">
   <li>第 21–27 行的 <code>load_tile</code> 只有一行，它把活交给了谁？为什么 CK-Tile 要多包这一层自由函数？（提示：同名的 <code>load_tile</code> 在第 151 行还有一个接受 <code>null_tile_window</code> 的重载。）</li>
-  <li>参数 <code>oob_conditional_check</code> 默认为 true。顺着 <code>tile_window::load</code> → <code>tensor_view::get_vectorized_elements</code>（第 81–90 行）→ <code>buffer_view::get</code> 往下找：它为 false 时省掉了什么？什么情况下可以安全地关掉？</li>
+  <li>参数 <code>oob_conditional_check</code> 默认为 true。从 <code>tile_window::load</code>（<code>tile_window.hpp</code>）出发，经 <code>tensor_view::get_vectorized_elements</code>（第 81–90 行）、<code>buffer_view::get</code>（<code>buffer_view.hpp</code> 第 288–331 行），一直追到 <code>core/arch/amd_buffer_addressing.hpp</code> 里的 <code>amd_buffer_load_invalid_element_return_zero</code>（第 2542–2569 行）。它为 false 时省掉了什么？注意区分软件的 <code>src_thread_element_valid</code> 标志和硬件的 buffer range 检查。什么情况下可以安全地关掉？</li>
   <li>第 52–62 行的另一个重载 <code>load_tile(dst_tile, window)</code> 与第 21–27 行的区别是什么？在一个循环里反复从同一个窗口 load 时，哪一种更合适？</li>
 </ol>
 
