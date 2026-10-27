@@ -90,6 +90,8 @@
 | 归约 | reduction，把很多个数用一种运算（求和、求最大值等）合成一个或少数几个结果。 | Lab 1 §4 |
 | 树形归约 | 每一层把数据两两合并、数量减半的归约方式，n 个数需要 log₂n 层。 | Lab 1 §4.2 |
 | 行主序 | row-major，矩阵按行连续存放，元素 (i, j) 的偏移是 i × 每行元素数 + j。 | Lab 1 §5.1 |
+| 行间距（ld） | leading dimension，矩阵每行在内存里实际占的元素数，可以大于列数；行 stride 就是 ld。LDS padding 是它的一个例子。 | Lab 3 §1.2 |
+| 列主序 | column-major，矩阵按列连续存放：沿行号走一步地址加 1，沿列号走一步跳过一整列。Fortran 和 BLAS 的习惯。 | Lab 3 §1.2 |
 | scratch | 每个线程私有、放在显存里的存储。寄存器不够（溢出）或局部数组无法放进寄存器时，编译器会用它，访问比寄存器慢得多。 | Lab 1 §1.2，§5.4 详讲 |
 
 ## 性能
@@ -206,6 +208,7 @@
 | `block_sync_lds` | CK-Tile 的 block 级屏障：等本线程的 LDS 操作完成后做 `s_barrier`，作用相当于 `__syncthreads()`。 | Lab 3 §2.5 |
 | `move_tile_window` | 把 tile window 的原点平移一段，例如在 GEMM 里沿 K 方向滑动。 | Lab 2 §3.3 |
 | `block_tile_reduce` | 对 distributed tensor 做每个线程内部的归约，只支持 2D tile 归约第 1 维；跨 lane 的合并要再调 `block_tile_reduce_sync`，它不跨 wavefront。 | Lab 3 §3.1 |
+| `block_tile_reduce_sync` | 把 lane 认领的 R 段上的部分结果用 wavefront shuffle 合并，默认再广播回同组的所有 lane；不跨 wavefront。 | Lab 3 §3.2 |
 
 ## 课程首页预告、后续 Lab 讲解
 
