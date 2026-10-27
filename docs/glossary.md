@@ -29,7 +29,7 @@
 | CU | Compute Unit，计算单元。一个 block 整个放在一个 CU 上执行；每个 CU 有 4 个 SIMD 和 64 KiB LDS。 | Lab 0 §2.1 |
 | SIMD | CU 里真正执行 wavefront 指令的单元，每个 CU 有 4 个。每个 SIMD 上可以同时驻留多个 wavefront。 | Lab 0 §2.1 |
 | wavefront | 硬件一起执行的一组线程，本机 64 个。同一个 wavefront 的线程每次执行同一条指令。 | Lab 0 §2.2 |
-| lane | wavefront 里的一个线程，编号 0–63。 | Lab 0 §2.2（图示），Lab 1 §2.1 |
+| lane | wavefront 里的一个线程，编号 0–63。 | Lab 0 §2.2 |
 | LDS | Local Data Share，每个 CU 上 64 KiB 的片上存储。同一个 block 的线程共享，在 kernel 里用 `__shared__` 声明。 | Lab 0 §2.1 |
 | HBM | GPU 的主存，也就是显存。本机约 192 GiB，所有 CU 都能访问；容量最大，访问延迟也最长。 | Lab 0 §2.1 |
 | L1 | 每个 CU 里 32 KiB 的向量数据缓存，由硬件自动管理。 | Lab 0 §2.1 |
@@ -41,6 +41,7 @@
 | matrix core | CU 里专门做矩阵乘加的硬件单元，通过 MFMA 指令使用。 | Lab 1 §5.5 |
 | SPX | MI308X 的一种分区模式：整张卡是一个 HIP 设备，4 个 XCD 共 80 个 CU。 | Lab 0 §2.3 |
 | CPX | MI308X 的一种分区模式：每个 XCD 是一个独立的 HIP 设备，各 20 个 CU。 | Lab 0 §2.3 |
+| KFD | AMD GPU 的 Linux 内核驱动接口；`/sys/class/kfd/kfd/topology/` 下列出每张卡的拓扑和属性。 | Lab 0 §2.3 |
 | ECC | 纠错码。架构名里的 `sramecc+` 表示片上存储的 ECC 已开启。 | Lab 0 §5.3 |
 | xnack | GPU 访存缺页后重试的功能。架构名里的 `xnack-` 表示关闭。 | Lab 0 §5.3 |
 | 显存位宽 | HBM 数据总线的总宽度，本机 8192 bit，用来算理论带宽。 | Lab 1 §1.3 |

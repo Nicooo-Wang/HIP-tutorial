@@ -41,7 +41,7 @@
     ├── device_query.hip
     ├── test.cpp
     └── README.md</code></pre>
-<p>你只需要编辑 <code>.hip</code> 文件里标着 <code>TODO</code> 的地方。每个 TODO 都长这样，括号里的节号指向讲义中讲解相关原理的位置：</p>
+<p>你只需要编辑 <code>.hip</code> 文件里标着 <code>TODO</code> 的地方。每个 TODO 都长这样，末尾的节号指向讲义中讲解相关原理的位置：</p>
 <pre><code class="language-cpp">  // TODO(a1-2): grid 要足够大以覆盖全部 n 个元素（向上取整），见讲义 §3.3
   // &gt;&gt;&gt; 你的代码 &lt;&lt;&lt;</code></pre>
 
@@ -80,7 +80,7 @@
     <text x="391" y="13" font-size="11" text-anchor="middle" style="fill: var(--d-muted)">还有 FAIL：改正后再判</text>
     <text x="392" y="109" font-size="11" text-anchor="start" style="fill: var(--d-muted)">全部 OK</text>
   </svg>
-  <figcaption><b>图 1.1</b>每个 Assignment 都按这个循环推进。判分是即时的，FAIL 信息就是最好的老师——不要跳过第 ④ 步直接猜。</figcaption>
+  <figcaption><b>图 1.1</b>每个 Assignment 都按这个循环推进。判分是即时的，FAIL 信息就是最好的老师，不要跳过第 ④ 步直接猜。</figcaption>
 </figure>
 <p>判分命令都在 <strong>Lab 目录</strong>下运行：</p>
 <pre><code class="language-bash">cd lab0-env
@@ -88,7 +88,7 @@ make grade          # 判本 Lab 的全部 Assignment
 make grade A=a1     # 只判 a1</code></pre>
 
 <h3 id="s1-3"><span class="sec">§1.3</span>读懂判分输出</h3>
-<p>拿到仓库后先什么都不改，直接运行一次 <code>make grade A=a1</code>。你会看到类似这样的输出（这是骨架原样的真实结果）：</p>
+<p>先运行一次 <code>make grade A=a1</code>，熟悉判分流程。下面是 a1 尚未实现时（骨架原样）的输出；如果你已经填过代码，实际结果会不同：</p>
 <pre><code class="language-text">使用 GPU: HIP_VISIBLE_DEVICES=7（自动选择最空闲的卡：计算 0%，显存 0%）
 a1-hello
   one_block_exact............................. FAIL (0/1)
@@ -104,15 +104,19 @@ Score: 0/6</code></pre>
 <p>逐行读：</p>
 <ul>
   <li><strong>第一行</strong>：判分脚本自动挑了一张最空闲的 GPU（机器是多人共享的，见 <a href="#s6-2">§6.2</a>）。</li>
-  <li><strong>用例行</strong>：用例名 + 结果 + 得分。用例名本身就是提示——<code>not_multiple_of_block</code> 说明这个用例专门测“n 不是 block 大小整数倍”的情形。用例的具体内容在同目录的 <code>test.cpp</code> 里，随时可以打开看。</li>
+  <li><strong>用例行</strong>：用例名 + 结果 + 得分。用例名本身就是提示，例如 <code>not_multiple_of_block</code> 专门测“n 不是 block 大小整数倍”的情形。用例的具体内容在同目录的 <code>test.cpp</code> 里，随时可以打开看。</li>
   <li><strong>缩进的说明行</strong>：哪个规模（<code>n=1000</code>）、错了多少个元素、第一个错在哪个下标、期望值和实际值。</li>
 </ul>
-<p>“得到 -1”是个重要线索：测试在调用你的代码之前，先把输出缓冲区全部填成 <code>-1</code>。如果某个位置仍是 <code>-1</code>，说明<em>根本没有线程写过它</em>；如果是别的错误值，说明写了但写错了。这两种情况的排查方向完全不同。</p>
+<p>“得到 -1”是个重要线索：测试在调用你的代码之前，先把输出缓冲区全部填成 <code>-1</code>。如果某个位置仍是 <code>-1</code>，先排查是不是<em>没有线程写过它</em>；不过错误的代码也可能恰好写入了 -1。如果得到的是别的错误值，就重点检查下标和写入的表达式。</p>
 
 <p>还有一类失败信息长这样：</p>
 <pre><code class="language-text">  not_multiple_of_block....................... FAIL (0/2)
     越界写：缓冲区（1000 个元素）之后的哨兵区被改写（距边界 1 字节）</code></pre>
-<p>测试给每个缓冲区的前后各多分配了 256 KiB 的“哨兵区”，整块填满同一个特殊的 32 位值（它是一个 NaN；当作 <code>int</code> 读则是一个约 21 亿的大数）。kernel 结束后逐字节检查哨兵区：若被改写，说明你的代码<strong>写</strong>到了数组范围之外。反过来，如果代码越界<strong>读</strong>到了哨兵值，这个值一旦当作浮点数参与运算（哪怕乘以 0）就会把结果变成 NaN 或明显错误的大数，在逐元素比较时暴露出来。</p>
+<p>测试给每个缓冲区的前后各多分配了 256 KiB 的“哨兵区”，整块填满一个特殊的 32 位值。这个值按浮点数解释是 NaN；按 32 位整数读，大约是 21 亿。kernel 结束后逐字节检查哨兵区：若被改写，说明你的代码<strong>写</strong>到了数组范围之外。</p>
+<p>越界<strong>读</strong>通常也会暴露：读到的哨兵值当作浮点数做加法、乘法（哪怕乘以 0）会得到 NaN，当作整数参与运算会混进一个约 21 亿的大数，逐元素比较时就能发现。但哨兵检查不能保证抓到所有越界访问。</p>
+<details class="deep"><summary>哪些越界读可能漏掉</summary>
+  <p>并不是所有运算都会把 NaN 传下去。例如 <code>fmaxf(NaN, 0.0f)</code> 返回 0：它只要有一个操作数不是 NaN，就返回那一个。受污染的中间结果也可能被后面的代码丢弃。测试只能检查最终输出，看不到中间过程。</p>
+</details>
 <figure class="diagram">
   <svg viewBox="0 0 640 132" role="img" aria-labelledby="fig12-t">
     <title id="fig12-t">GuardedBuffer：数组前后各有 256 KiB 哨兵区，越界写会改写哨兵区并被检测到</title>
@@ -133,29 +137,37 @@ Score: 0/6</code></pre>
     <text x="436" y="20" font-size="11" text-anchor="end" style="fill: var(--d-4)">越界线程写到 out[n]、out[n+1] …</text>
     <text x="320" y="110" font-size="12" text-anchor="middle" style="fill: var(--d-muted)">kernel 结束后逐字节检查两侧哨兵区：被改写 → 用例 FAIL</text>
   </svg>
-  <figcaption><b>图 1.2</b>越界写往往<em>不会</em>让程序崩溃——它悄悄改写了相邻的数据。数值看起来全对，程序也可能是错的；哨兵区就是为了抓住这类错误。</figcaption>
+  <figcaption><b>图 1.2</b>越界写往往<em>不会</em>让程序崩溃，它只是悄悄改写了相邻的数据。数值看起来全对，程序也可能是错的；哨兵区就是为了抓住这类错误。</figcaption>
 </figure>
-<p>另外三种失败信息：<strong>“超时（&gt;60 s）”</strong>通常是死循环或挂起；<strong>“进程崩溃（退出码 …）”</strong>后面会附上程序最后输出的几行，一般能看到 HIP 报出的错误原因（§4 会讲怎么看）；<strong>“a1-hello: 编译失败（0 分）”</strong>后面紧跟 hipcc 的完整报错——整道题一个用例都不会运行，所以是 0 分。报错可能很长（后面用到 CK-Tile 模板时尤其如此），从<em>第一条</em> <code>error:</code> 开始读，后面的错误常常是它连带出来的。</p>
+<p>另外三种常见的失败信息：</p>
+<ul>
+  <li><strong>“超时（&gt;60 s）”</strong>：通常是死循环或挂起。</li>
+  <li><strong>“进程崩溃（退出码 …）”</strong>：后面会附上程序最后输出的几行，一般能看到 HIP 报出的错误原因（§4 讲怎么看）。</li>
+  <li><strong>“a1-hello: 编译失败（0 分）”</strong>：后面紧跟 hipcc 的完整报错。整道题一个用例都不会运行，所以是 0 分。报错可能很长，从<em>第一条</em> <code>error:</code> 开始读，后面的错误常常是它连带出来的。</li>
+</ul>
 
 <h3 id="s1-4"><span class="sec">§1.4</span>用 make run 调试</h3>
 <p><code>make grade</code> 把每个用例放在独立进程里跑、只汇总结论。想看程序自己的输出（比如你加的 <code>printf</code>）时，用 <code>make run</code>：</p>
 <pre><code class="language-bash">make run A=a1                      # 编译并直接运行全部用例，输出原样打印
 make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
-<p><code>make run</code> 每个用例打印一行 <code>OK</code> 或 <code>FAIL</code>（与 <code>make grade</code> 相同的用语，但不显示分值），最后一行是“通过 x/y”。它和 <code>make grade</code> 一样会自动挑最空闲的卡（先打印一行“使用 GPU: …”）；想指定某张卡就在命令前加上 <code>HIP_VISIBLE_DEVICES=…</code>（§6.2）。直接运行编译出来的 <code>./build/run-aK</code> 则不会挑卡，没设置 <code>HIP_VISIBLE_DEVICES</code> 时默认用物理 0 号卡。</p>
-<p>两个命令背后都是同一条编译命令（<code>STUDENT_SRC</code> 告诉 <code>test.cpp</code> 要包含哪个 <code>.hip</code> 文件；<code>common/lab.mk</code> 里实际写的是绝对路径，效果与下面相同）：</p>
+<p><code>make run</code> 每个用例打印一行 <code>OK</code> 或 <code>FAIL</code>（与 <code>make grade</code> 相同的用语，但不显示分值），最后一行是“通过 x/y”。</p>
+<p>它和 <code>make grade</code> 一样会自动挑最空闲的卡，先打印一行“使用 GPU: …”；想指定某张卡，就在命令前加上 <code>HIP_VISIBLE_DEVICES=…</code>（§6.2）。</p>
+<p>注意：直接运行编译出来的 <code>./build/run-aK</code> <strong>不会</strong>挑卡；没设置 <code>HIP_VISIBLE_DEVICES</code> 时，默认用 0 号卡。</p>
+<p>两个命令用的编译选项相同。区别是 <code>make run A=a1</code> 会把可执行文件保留在 <code>build/run-a1</code>，之后可以直接重复运行；<code>make grade</code> 编译到临时文件，判分结束就删除。想手动编译，可以这样写：</p>
 <pre><code class="language-bash">/opt/rocm/bin/hipcc -std=c++20 -O2 --offload-arch=gfx942 -I../common \
   -DSTUDENT_SRC="\"$PWD/a1-hello/hello.hip\"" a1-hello/test.cpp -o build/run-a1</code></pre>
-<p><code>hipcc</code> 是 ROCm 的编译器驱动，一次编译同时生成 CPU 代码和 GPU 代码；<code>--offload-arch=gfx942</code> 指定 GPU 代码的目标架构，即本机 MI308X（§2）。编译出的程序在 <code>build/run-a1</code>，之后可以直接重复运行它，或者交给 §6 的工具分析。kernel 里也可以用 <code>printf</code>，但成千上万个线程会一起打印，记得只让少数线程打印，例如加上 <code>if (i == 0)</code>。</p>
+<p><code>hipcc</code> 是 ROCm 的编译器驱动，一次编译同时生成 CPU 代码和 GPU 代码；<code>--offload-arch=gfx942</code> 指定 GPU 代码的目标架构，即本机 MI308X（§2）。<code>STUDENT_SRC</code> 告诉 <code>test.cpp</code> 要包含哪个 <code>.hip</code> 文件。</p>
+<p>kernel 里也可以用 <code>printf</code>，但成千上万个线程会一起打印，记得只让少数线程打印，例如加上 <code>if (blockIdx.x == 0 &amp;&amp; threadIdx.x == 0)</code>，只让第一个 block 的第一个线程打印。</p>
 <div class="callout note" data-title="书面问题">
   <p>每个 Assignment 的 README 末尾有几道书面问题，答案写在 <code>lab0-env/answers.md</code>。它们不计分，但都是后面几课要用到的直觉，建议认真写。</p>
 </div>
 
 <!-- ============================================================ §2 -->
 <h2 id="s2"><span class="sec">§2</span>一台 MI308X 长什么样</h2>
-<p>写 kernel 之前，先对“代码会跑在什么东西上”有个画面。本机有 8 张 AMD Instinct MI308X，架构代号 <code>gfx942</code>，属于 CDNA3 架构（与 MI300X 同代）。</p>
+<p>写 kernel 之前，先对“代码会跑在什么东西上”有个画面。本机有 8 张 AMD Instinct MI308X，架构代号 <code>gfx942</code>，属于 CDNA3 架构，与 MI300X 同代。</p>
 
 <h3 id="s2-1"><span class="sec">§2.1</span>从 GPU 到 SIMD</h3>
-<p>MI308X 是由多块芯粒（chiplet）拼成的。负责计算的芯粒叫 <strong>XCD</strong>（Accelerator Complex Die）。本机每张卡有 4 个 XCD；每个 XCD 里有若干 <strong>CU</strong>（Compute Unit，计算单元）和一块所有 CU 共享的 L2 缓存。CU 是 GPU 上独立调度执行的基本单位，每个 CU 内部又有 4 个 <strong>SIMD</strong> 执行单元，以及一块 CU 内共享的高速片上存储 <strong>LDS</strong>（Local Data Share）。</p>
+<p>MI308X 是由多块芯粒（chiplet）拼成的。负责计算的芯粒叫 <strong>XCD</strong>（Accelerator Complex Die）。本机每张卡有 4 个 XCD；每个 XCD 里有若干 <strong>CU</strong>（Compute Unit，计算单元）和一块所有 CU 共享的 L2 缓存。CU 是 GPU 上独立调度执行的基本单位。每个 CU 内部有 4 个 <strong>SIMD</strong> 执行单元，以及一块 CU 内共享的高速片上存储 <strong>LDS</strong>（Local Data Share）。</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 486" role="img" aria-labelledby="fig21-t">
     <title id="fig21-t">MI308X 的层次结构：4 个 XCD，每个含 20 个 CU 和 4 MiB L2；下方是 256 MiB Infinity Cache 与 HBM 显存；每个 CU 含 4 个 SIMD、64 KiB LDS 与 32 KiB L1</title>
@@ -232,14 +244,17 @@ make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
       <text x="568" y="446" font-size="10">向量数据缓存</text>
     </g>
   </svg>
-  <figcaption><b>图 2.1</b>MI308X 的存储与计算层次（示意，不按面积比例）。80 个 CU 平均分布在 4 个 XCD 上（每个 XCD 20 个）。缓存层级 L1 → L2 → Infinity Cache → HBM 越往下越大、也越慢。LDS 与 L1 同在 CU 内、速度相当（本机 LDS 64 KiB 反而比 L1 的 32 KiB 大），但它不是缓存，而是由程序显式读写的暂存区。L2 每个 XCD 一份、各自独立，这一点在后面优化访存时会再遇到。</figcaption>
+  <figcaption><b>图 2.1</b>MI308X 的存储与计算层次（示意，不按面积比例）。80 个 CU 平均分布在 4 个 XCD 上，每个 XCD 20 个。缓存层级 L1 → L2 → Infinity Cache → HBM 越往下越大，也越慢。LDS 与 L1 都在 CU 内，区别在于用法：LDS 是由程序显式读写的暂存区，L1 是硬件自动管理的缓存。本机 LDS 64 KiB，比 L1 的 32 KiB 还大。L2 每个 XCD 一份、各自独立，这一点在后面优化访存时会再遇到。</figcaption>
 </figure>
 <div class="callout note" data-title="和 MI300X 的区别">
-  <p>你在网上查到的 CDNA3 资料多数是 MI300X：它有 8 个 XCD、每个 XCD 启用 38 个 CU，共 304 个 CU。本机的 MI308X 是 4 个 XCD、共 80 个 CU。<strong>所以不要照抄网上的数字</strong>——Assignment a2 会让你用 API 把本机的数字查出来。</p>
+  <p>你在网上查到的 CDNA3 资料多数是 MI300X：它有 8 个 XCD、每个 XCD 启用 38 个 CU，共 304 个 CU。本机的 MI308X 是 4 个 XCD、共 80 个 CU。<strong>所以不要照抄网上的数字</strong>，Assignment a2 会让你用 API 把本机的数字查出来。</p>
 </div>
 
 <h3 id="s2-2"><span class="sec">§2.2</span>软件层次如何落到硬件上</h3>
-<p>写 kernel 时，你描述的是一个三层的“线程组织”：一次 kernel 启动产生一个 <strong>grid</strong>；grid 由许多 <strong>block</strong> 组成；每个 block 由许多 <strong>thread</strong> 组成。硬件运行时，再把 block 内的线程每 64 个打包成一个 <strong>wavefront</strong>，这 64 个线程同时执行同一条指令（这是编程模型层面的说法：物理上每个 SIMD 每周期处理 16 个 lane，一条 wave64 的向量指令分 4 个周期发完）。</p>
+<p>写 kernel 时，你描述的是一个三层的“线程组织”：一次 kernel 启动产生一个 <strong>grid</strong>；grid 由许多 <strong>block</strong> 组成；每个 block 由许多 <strong>thread</strong>（线程）组成。硬件运行时，再把 block 内的线程每 64 个打包成一个 <strong>wavefront</strong>；在编程模型里，这 64 个线程同时执行同一条指令。wavefront 里的每个线程也叫一个 <strong>lane</strong>，编号 0–63。</p>
+<details class="deep"><summary>64 个线程真的是“同时”执行吗</summary>
+  <p>物理上，每个 SIMD 的向量运算单元一次处理 16 个 lane，所以一条常规的 32 位向量指令要分 4 个周期才对整个 wavefront 执行完；FP64、矩阵指令等的周期数不同。但从编程模型看，64 个 lane 始终步调一致地执行同一条指令，写代码时按“同时”理解即可。</p>
+</details>
 <figure class="diagram">
   <svg viewBox="0 0 640 236" role="img" aria-labelledby="fig22-t">
     <title id="fig22-t">软件层次到硬件的映射：grid 对应整张 GPU，block 对应一个 CU，wavefront 对应一个 SIMD，thread 对应一个 lane</title>
@@ -261,7 +276,7 @@ make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
       <text x="130" y="209" text-anchor="middle"><tspan font-weight="700">thread</tspan>（一个线程）</text>
 
       <rect x="390" y="28" width="230" height="40" rx="6" fill="none" stroke="var(--d-stroke)" stroke-width="1.5"/>
-      <text x="505" y="53" text-anchor="middle">整张 GPU（80 个 CU 一起分担）</text>
+      <text x="505" y="53" text-anchor="middle">GPU 上的可用 CU（本机共 80 个）</text>
       <rect x="390" y="80" width="230" height="40" rx="6" fill="none" stroke="var(--d-stroke)" stroke-width="1.5"/>
       <text x="505" y="105" text-anchor="middle">某一个 CU（block 不会跨 CU）</text>
       <rect x="390" y="132" width="230" height="40" rx="6" fill="none" stroke="var(--d-stroke)" stroke-width="1.5"/>
@@ -286,7 +301,7 @@ make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
   <tbody>
     <tr><th>block</th><td>workgroup</td><td>thread block</td></tr>
     <tr><th>thread</th><td>work-item / lane</td><td>thread</td></tr>
-    <tr><th>wavefront</th><td>wavefront（wave）</td><td>warp（32 线程，而 AMD 是 64）。注意：CK-Tile 源码沿用 warp 一词指 AMD 的 wavefront（gfx942 上 64 lane），如 <code>get_warp_id</code>、warp GEMM（Lab 2 起）</td></tr>
+    <tr><th>wavefront</th><td>wavefront（wave）</td><td>warp（32 线程，而 AMD 是 64）。HIP API 沿用了 warp 一词，例如 <code>warpSize</code>、<code>hipDeviceAttributeWarpSize</code>；CK-Tile 源码也用 warp 指 AMD 的 wavefront，如 <code>get_warp_id</code>（Lab 2 起）</td></tr>
     <tr><th>LDS</th><td>LDS（Local Data Share）</td><td>shared memory</td></tr>
     <tr><th>CU</th><td>Compute Unit</td><td>SM</td></tr>
   </tbody>
@@ -307,9 +322,9 @@ make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
     <tr><th>wavefront 宽度</th><td class="num">64</td><td class="src">hipDeviceAttributeWarpSize</td></tr>
     <tr><th>block 最大线程数</th><td class="num">1024</td><td class="src">hipDeviceAttributeMaxThreadsPerBlock</td></tr>
     <tr><th>LDS / block</th><td class="num">64 KiB</td><td class="src">hipDeviceAttributeMaxSharedMemoryPerBlock = 65536</td></tr>
-    <tr><th>L1 向量缓存 / CU</th><td class="num">32 KiB</td><td class="src">amd-smi static（CACHE_0，80 份）</td></tr>
+    <tr><th>L1 向量缓存 / CU</th><td class="num">32 KiB</td><td class="src">amd-smi static（CACHE_0：每个 CU 一份，共 80 份）</td></tr>
     <tr><th>L2 / XCD</th><td class="num">4 MiB</td><td class="src">hipDeviceAttributeL2CacheSize = 4194304</td></tr>
-    <tr><th>Infinity Cache</th><td class="num">256 MiB</td><td class="src">amd-smi static（CACHE_6，L3）</td></tr>
+    <tr><th>Infinity Cache</th><td class="num">256 MiB</td><td class="src">amd-smi static（CACHE_6：即 L3 / Infinity Cache）</td></tr>
     <tr><th>HBM 容量</th><td class="num">191.98 GiB</td><td class="src">hipDeviceProp_t::totalGlobalMem = 206141652992 字节</td></tr>
     <tr><th>最高核心频率</th><td class="num">1850 MHz</td><td class="src">hipDeviceAttributeClockRate = 1850000 kHz</td></tr>
   </tbody>
@@ -318,8 +333,8 @@ make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
 <p>关于这张表的几点说明：</p>
 <ul>
   <li><code>rocminfo</code> 不在本机的默认 <code>PATH</code> 里，要写全路径 <code>/opt/rocm/bin/rocminfo</code>（与 <code>/opt/rocm/bin/hipcc</code> 一样）。它的输出按“agent”分段：前两个 agent 是 CPU（其中 <code>SIMDs per CU</code> 等字段为 0），后面 8 个才是 GPU，读数时看 GPU 那几段。</li>
-  <li>“4 个 XCD、80 个 CU”是本机 GPU 工作在 <strong>SPX</strong> 分区模式下的结果（<code>rocm-smi</code> 的 Partition 一栏）。如果换成 CPX 模式，每个 XCD 会变成一个独立的 HIP 设备（20 个 CU）——这也是“不要写死数字”的又一个理由。</li>
-  <li>L2 的数字要小心：API 返回的 4194304 字节只是<strong>一个 XCD</strong> 的 L2；整卡共 4 × 4 MiB。<code>amd-smi</code> 和 KFD 拓扑也只列出一个 L2 实例，看起来像“整卡只有 4 MiB”，其实不是。</li>
+  <li>“4 个 XCD、80 个 CU”是本机 GPU 工作在 <strong>SPX</strong> 分区模式下的结果。分区模式决定一张卡被分成几个 HIP 设备：SPX 是整卡作为一个设备；CPX 是每个 XCD 各成一个设备，每个只有 20 个 CU。当前模式见 <code>rocm-smi</code> 的 Partition 一栏。换了模式数字就变，这也是“不要写死数字”的又一个理由。</li>
+  <li>L2 的数字要小心：API 返回的 4194304 字节只是<strong>一个 XCD</strong> 的 L2；整卡共 4 × 4 MiB。<code>amd-smi</code> 和内核驱动的 KFD 拓扑信息（上表 <code>/sys/class/kfd/kfd/topology/…</code> 那个来源）也只列出一个 L2 实例，看起来像“整卡只有 4 MiB”，其实不是。</li>
 </ul>
 <p>架构细节的权威出处是 AMD 的 <a href="https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/white-papers/amd-cdna-3-white-paper.pdf">CDNA3 白皮书</a>（XCD、L2、Infinity Cache、LDS 的结构）和 <a href="https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-mi300-cdna3-instruction-set-architecture.pdf">MI300 ISA 手册</a>（指令与 wavefront 执行模型）。现在不必读，遇到具体问题时再查。</p>
 
@@ -347,17 +362,17 @@ void add_one_64(int* data, hipStream_t stream) {
   //       grid  block  动态LDS  stream
   add_one&lt;&lt;&lt;1,    64,    0,       stream&gt;&gt;&gt;(data);
 }</code></pre>
-<p>尖括号里的 4 个参数依次是：block 个数（grid 大小）、每个 block 的线程数、动态分配的 LDS 字节数（本课用不到，填 0）、在哪个 <strong>stream</strong> 上执行。stream 可以理解为“GPU 任务队列”；传 <code>nullptr</code>（也就是 0）表示默认队列。a1 的测试调用你的函数时就传入 <code>nullptr</code>，你只需把收到的 <code>stream</code> 原样传给启动语句。</p>
+<p>尖括号里的 4 个参数依次是：block 个数（grid 大小）、每个 block 的线程数、动态分配的 LDS 字节数（本课用不到，填 0）、在哪个 <strong>stream</strong> 上执行。stream 可以理解为“GPU 任务队列”，传 <code>nullptr</code>（也就是 0）表示默认队列。a1 的测试调用你的函数时传入的就是 <code>nullptr</code>，你只需把收到的 <code>stream</code> 原样传给启动语句。</p>
 <div class="callout note">
   <p><code>blockIdx</code>、<code>threadIdx</code> 等都有 <code>.x/.y/.z</code> 三个分量，用来方便地处理二维、三维数据（Lab 1 会用到）。本课只用 <code>.x</code>，其余分量默认为 0、大小为 1。</p>
 </div>
 
 <h3 id="s3-2"><span class="sec">§3.2</span>全局下标与边界检查</h3>
-<p>上面的例子只有一个 block，<code>threadIdx.x</code> 就足以区分所有线程。但一个 block 最多 1024 个线程，处理四百万个元素必须用很多个 block——而<strong>每个 block 里的 <code>threadIdx.x</code> 都从 0 开始重新编号</strong>。只用 <code>threadIdx.x</code> 的话，所有 block 会争抢同样的前 <code>blockDim.x</code> 个元素，后面的元素没人管。</p>
+<p>上面的例子只有一个 block，<code>threadIdx.x</code> 就足以区分所有线程。但一个 block 最多 1024 个线程，处理四百万个元素必须用很多个 block，而<strong>每个 block 里的 <code>threadIdx.x</code> 都从 0 开始重新编号</strong>。只用 <code>threadIdx.x</code> 的话，所有 block 会争抢同样的前 <code>blockDim.x</code> 个元素，后面的元素没人管。</p>
 <p>解决办法和给楼里的房间统一编号一样：第 <code>b</code> 栋楼、每栋 <code>B</code> 间、楼内第 <code>t</code> 间，全局编号就是“前面 <code>b</code> 栋楼的房间总数”加上“楼内编号”：</p>
 <p style="text-align:center"><code>全局下标 = blockIdx.x × blockDim.x + threadIdx.x</code></p>
 <p>这样 grid 中每个线程都有一个独一无二的全局下标 0, 1, 2, …，正好可以用来对应数组的每个元素。</p>
-<p>第二个问题：block 大小固定（例如 256），而 n 是任意的。只要 n 不是 256 的整数倍，启动的线程总数就会<em>多于</em> n，多出来的那些线程算出的全局下标 ≥ n——它们对应的元素根本不存在。这些线程必须<strong>什么都不做</strong>：在写内存之前先判断下标是否在 <code>[0, n)</code> 范围内，不在就跳过。这就是<strong>边界检查</strong>。漏掉它，多出来的线程就会写到数组末尾之后的内存里（图 1.2 的哨兵区就是来抓这个的）。</p>
+<p>第二个问题：block 大小固定（例如 256），而 n 是任意的。只要 n 不是 256 的整数倍，启动的线程总数就会<em>多于</em> n，多出来的那些线程算出的全局下标 ≥ n，它们对应的元素根本不存在。这些线程必须<strong>什么都不做</strong>：在写内存之前先判断下标是否在 <code>[0, n)</code> 范围内，不在就跳过。这就是<strong>边界检查</strong>。漏掉它，多出来的线程就会写到数组末尾之后的内存里（图 1.2 的哨兵区就是来抓这个的）。</p>
 <p>在下面的小部件里调整 block 大小和 n，点任意一个线程格子，看它算出的全局下标；灰色格子是下标越界、必须被边界检查挡住的线程。</p>
 
 <figure class="widget" data-widget="index-map">
@@ -382,7 +397,7 @@ void add_one_64(int* data, hipStream_t stream) {
 
 <h3 id="s3-3"><span class="sec">§3.3</span>grid 要多大：向上取整</h3>
 <p>每个 block 负责 <code>B = blockDim.x</code> 个元素，要覆盖全部 <code>n</code> 个元素，block 个数必须至少是 <code>n / B</code>，并且<strong>向上取整</strong>：⌈n / B⌉。例如 n = 1000、B = 256：1000 / 256 = 3.9…，需要 4 个 block（共 1024 个线程，其中 24 个越界、什么都不做）。</p>
-<p>陷阱在于 C++ 的整数除法是<em>向下取整</em>的：<code>1000 / 256</code> 的结果是 <code>3</code>，3 个 block 只有 768 个线程，最后 232 个元素没人写。在小部件 3.1 中勾选“错误示范”就能看到这种情形；n &lt; B 时更糟——grid 变成 0，启动直接报错 <code>hipErrorInvalidConfiguration</code>。</p>
+<p>陷阱在于 C++ 的整数除法是<em>向下取整</em>的：<code>1000 / 256</code> 的结果是 <code>3</code>，3 个 block 只有 768 个线程，最后 232 个元素没人写。在小部件 3.1 中勾选“错误示范”就能看到这种情形。n &lt; B 时更糟：grid 变成 0，启动直接报错 <code>hipErrorInvalidConfiguration</code>。</p>
 <p>只用整数运算（不借助浮点和 <code>ceil</code>）也能求 ⌈a / b⌉（a ≥ 0，b &gt; 0）。常用的技巧是：做整数除法之前，先给分子 a 加上一个<strong>合适的常数</strong>。这个常数该是多少？请你自己推出来，判断标准有两条：</p>
 <ul>
   <li>a 恰好是 b 的整数倍时，加上它之后整数除法的结果<strong>不能变</strong>；</li>
@@ -390,11 +405,11 @@ void add_one_64(int* data, hipStream_t stream) {
 </ul>
 <p>想清楚“余数最小是几、最大是几”就能确定这个常数。推出来后用几组数验算：b = 256 时，a = 1、256、257、1000、1024 应分别得到 1、1、2、4、4。小部件 3.1 的读数也可以帮你核对。</p>
 <div class="callout warn">
-  <p>a1 的 <code>many_blocks</code> 用例用 n = 4194307（= 2<sup>22</sup> + 3）——比 256 的整数倍多 3，专门检查“最后一个不满的 block”有没有被启动。</p>
+  <p>a1 的 <code>many_blocks</code> 用例用 n = 4194307（= 2<sup>22</sup> + 3），比 256 的整数倍多 3，专门检查“最后一个不满的 block”有没有被启动。</p>
 </div>
 
 <div class="assignment-card" data-assign="a1" data-lab="lab0-env" data-path="lab0-env/a1-hello/hello.hip" data-title="第一个 kernel">
-  <p>让 <code>launch_fill_ids(out, n, stream)</code> 结束后 <code>out[i] == i</code> 对所有 0 ≤ i &lt; n 成立：补全 kernel 中的全局下标与边界检查（TODO a1-1，§3.2），以及启动时的 grid 大小（TODO a1-2，§3.3）。n 可能是 1、不整除 256、或四百万以上。</p>
+  <p>补全 <code>launch_fill_ids(out, n, stream)</code>，在传入的 stream 上启动 kernel；kernel 完成后，应有 <code>out[i] == i</code> 对所有 0 ≤ i &lt; n 成立（测试会在检查结果前同步）。要补的是 kernel 中的全局下标与边界检查（TODO a1-1，§3.2），以及启动时的 grid 大小（TODO a1-2，§3.3）。n 可能是 1、不整除 256、或四百万以上。</p>
 </div>
 <p class="sec-assign">本节对应 Assignment a1，任务说明与提示见 <code>lab0-env/a1-hello/README.md</code>。</p>
 
@@ -407,7 +422,7 @@ void add_one_64(int* data, hipStream_t stream) {
 <p>不要无视这类警告：GPU 出错时程序往往不会立刻崩溃，而是带着错误的结果继续跑下去，直到很远的地方才露馅。</p>
 
 <h3 id="s4-2"><span class="sec">§4.2</span>kernel 是异步的</h3>
-<p>启动 kernel 的那一行<strong>不会等 kernel 跑完</strong>：主机只是把任务放进 stream 队列就立刻返回，继续执行后面的代码；GPU 在后台执行。想等它结束，要调用 <code>hipDeviceSynchronize()</code>，它会阻塞主机线程，直到<strong>本进程</strong>在<strong>当前设备</strong>上（所有 stream 中）之前提交的工作全部完成——它不会去等别的进程在同一张卡上的任务。</p>
+<p>启动 kernel 的那一行<strong>不会等 kernel 跑完</strong>：主机只是把任务放进 stream 队列就立刻返回，继续执行后面的代码，GPU 在后台执行。想等它结束，要调用 <code>hipDeviceSynchronize()</code>。它会阻塞主机线程，直到<strong>本进程</strong>在<strong>当前设备</strong>上（所有 stream 中）之前提交的工作全部完成；它不会去等别的进程在同一张卡上的任务。</p>
 <figure class="diagram">
   <svg viewBox="0 0 640 176" role="img" aria-labelledby="fig41-t">
     <title id="fig41-t">异步执行时间线：主机启动 kernel 后立即返回，在 hipDeviceSynchronize 处等待 GPU 完成</title>
@@ -442,11 +457,14 @@ void add_one_64(int* data, hipStream_t stream) {
 </figure>
 <p>异步带来一个后果：kernel 的错误分两类，暴露的时机不同。</p>
 <ul>
-  <li><strong>启动错误</strong>：例如 block 大小超过 1024，或 grid 为 0。kernel 根本没有开始跑。启动语句本身没有返回值，要紧接着调用 <code>hipGetLastError()</code> 取出这个错误（本机实测返回 <code>hipErrorInvalidConfiguration</code>；用 <code>hipGetErrorString</code> 转成文字是 <code>invalid configuration argument</code>，判分输出里看到的就是这句）。</li>
-  <li><strong>执行错误</strong>：例如访问了非法地址。要等 kernel 真正执行时才发生，所以要到 <code>hipDeviceSynchronize()</code> 的返回值里才能看到（本机实测为 <code>hipErrorIllegalAddress</code>。部分情况下——例如地址远远超出合法范围——运行时还会在终端打印一段 <code>HSA_STATUS_ERROR_…</code> 诊断，其中有出错的 kernel 名字；但常见的越界访问往往只有这个错误码，终端上什么也不打印）。</li>
+  <li><strong>启动错误</strong>：例如 block 大小超过 1024，或 grid 为 0，kernel 根本没有开始跑。启动语句本身没有返回值，要紧接着调用 <code>hipGetLastError()</code> 取出这个错误。本机实测返回 <code>hipErrorInvalidConfiguration</code>，用 <code>hipGetErrorString</code> 转成文字是 <code>invalid configuration argument</code>，判分输出里看到的就是这句。</li>
+  <li><strong>执行错误</strong>：例如访问了非法地址。它在 kernel 真正执行时才发生，所以要用 <code>hipDeviceSynchronize()</code> 的返回值检查（本机实测为 <code>hipErrorIllegalAddress</code>）。越界访问未必会触发错误，见下面的易错框。</li>
 </ul>
+<details class="deep"><summary>执行错误时终端会打印什么</summary>
+  <p>部分情况下，例如地址远远超出合法范围，运行时还会在终端打印一段以 <code>HSA_STATUS_ERROR_</code> 开头的诊断，其中有出错的 kernel 名字。但常见的越界访问往往只有错误码，终端上什么也不打印。</p>
+</details>
 <div class="callout pitfall">
-  <p>只越界一点点（比如写到数组末尾之后几个元素）通常<em>不会</em>触发非法地址错误——那块内存属于你的进程，写进去也“合法”，只是破坏了别的数据。所以“程序没报错”不等于“没有越界”。本机实测甚至有更极端的情况：往空指针附近的地址写，<code>hipDeviceSynchronize()</code> 也返回 <code>hipSuccess</code>。<code>hipSuccess</code> 永远不能证明访存是合法的。</p>
+  <p>只越界一点点（比如写到数组末尾之后几个元素）通常<em>不会</em>触发非法地址错误：那块内存属于你的进程，写进去也“合法”，只是破坏了别的数据。所以“程序没报错”不等于“没有越界”。本机实测甚至有更极端的情况：往空指针附近的地址写，<code>hipDeviceSynchronize()</code> 也返回 <code>hipSuccess</code>。<code>hipSuccess</code> 永远不能证明访存是合法的。</p>
 </div>
 
 <h3 id="s4-3"><span class="sec">§4.3</span>HIP_CHECK 宏</h3>
@@ -474,7 +492,7 @@ HIP_CHECK(hipFree(d_x));</code></pre>
 <p>硬件参数不应该凭记忆写死在代码里：同一份代码可能跑在 MI300X（304 CU）、MI308X（80 CU）或别的卡上。HIP 提供两种查询方式。</p>
 
 <h3 id="s5-1"><span class="sec">§5.1</span>hipGetDeviceProperties：一次拿到整张“属性表”</h3>
-<p><code>hipGetDeviceProperties(&amp;prop, device)</code> 把第 <code>device</code> 号 GPU 的几十项属性一次性填进一个 <code>hipDeviceProp_t</code> 结构体。它的成员定义在 <code>/opt/rocm/include/hip/hip_runtime_api.h</code>，多数成员后面有英文注释说明含义，其中一部分注明了单位（例如 <code>totalGlobalMem</code> 写了 in bytes，<code>clockRate</code> 写了 in khz）。例如：</p>
+<p><code>hipGetDeviceProperties(&amp;prop, device)</code> 把第 <code>device</code> 号 GPU 的几十项属性一次性填进一个 <code>hipDeviceProp_t</code> 结构体。它的成员定义在 <code>/opt/rocm/include/hip/hip_runtime_api.h</code>，多数成员后面有英文注释说明含义，其中一部分注明了单位，例如 <code>totalGlobalMem</code> 写了 in bytes，<code>clockRate</code> 写了 in khz：</p>
 <pre><code class="language-cpp">hipDeviceProp_t prop;
 HIP_CHECK(hipGetDeviceProperties(&amp;prop, 0));
 std::printf("名字: %s\n", prop.name);                        // 字符数组，如 "AMD Instinct MI308X"
@@ -483,23 +501,28 @@ std::printf("每 CU 最多线程数: %d\n", prop.maxThreadsPerMultiProcessor);</
 <p>注意成员的类型：表示内存容量的成员（如 <code>totalGlobalMem</code>，单位字节）是 <code>size_t</code>，本机的值约 2×10<sup>11</sup>，超出了 <code>int</code> 的范围，存放时要用 64 位整数类型。</p>
 
 <h3 id="s5-2"><span class="sec">§5.2</span>hipDeviceGetAttribute：一次查一项</h3>
-<p>只需要个别属性时，用 <code>hipDeviceGetAttribute</code> 写起来更直接，属性名也和 CUDA 一一对应、便于查表。（它并不更省时间：ROCm 的实现每次调用都会先构造一整份 <code>hipDeviceProp_t</code> 再取出一项。不过两种方式单次都不到 1 微秒，不必为性能去挑。）</p>
+<p>只需要个别属性时，用 <code>hipDeviceGetAttribute</code> 写起来更直接。常用属性的名字与 CUDA 有对应关系，便于对照资料；但也有 AMD 专有的属性，查具体名称和含义时以 HIP 头文件为准。两种查询方式按代码清晰度选择即可。</p>
+<details class="deep"><summary>hipDeviceGetAttribute 比 hipGetDeviceProperties 快吗</summary>
+  <p>不一定。ROCm 的实现里，<code>hipDeviceGetAttribute</code> 每次调用都会先构造一整份 <code>hipDeviceProp_t</code> 再取出其中一项。查询属性通常只在程序开头做一次，不必为性能挑选写法。</p>
+</details>
 <pre><code class="language-cpp">// 原型：hipError_t hipDeviceGetAttribute(int* value, hipDeviceAttribute_t attr, int device);
 int l2_bytes = 0, mem_khz = 0;
 HIP_CHECK(hipDeviceGetAttribute(&amp;l2_bytes, hipDeviceAttributeL2CacheSize, 0));
 HIP_CHECK(hipDeviceGetAttribute(&amp;mem_khz, hipDeviceAttributeMemoryClockRate, 0));</code></pre>
-<p>属性名全部以 <code>hipDeviceAttribute</code> 开头，定义在同一个头文件的 <code>enum hipDeviceAttribute_t</code> 里。查找某个属性名及其单位：</p>
-<pre><code class="language-bash">grep -n "hipDeviceAttribute" /opt/rocm/include/hip/hip_runtime_api.h | less</code></pre>
+<p>属性名全部以 <code>hipDeviceAttribute</code> 开头，定义在同一个头文件的 <code>enum hipDeviceAttribute_t</code> 里。查找某个属性名及其单位（<code>-A 1</code> 多显示一行，因为有些注释会换行，单位写在下一行）：</p>
+<pre><code class="language-bash">grep -n -A 1 "hipDeviceAttribute" /opt/rocm/include/hip/hip_runtime_api.h | less</code></pre>
 <div class="callout pitfall">
-  <p><strong>单位</strong>是最常见的坑：容量类属性单位是<em>字节</em>；频率类属性（如 <code>hipDeviceAttributeClockRate</code>）单位是 <em>kHz</em>，换成 MHz 要除以 1000。另一个坑是<strong>名字相近的属性</strong>：例如 <code>hipDeviceAttributeMaxRegistersPerBlock</code>（每个 block 可用的寄存器数，本机 131072）与 LDS 容量毫无关系。拿不准时，打开头文件看注释；注释没写单位时，用已知的值反推（例如 L2 查到 4194304，显然单位是字节）。</p>
+  <p><strong>单位</strong>是最常见的坑：容量类属性单位是<em>字节</em>；频率类属性（如 <code>hipDeviceAttributeClockRate</code>）单位是 <em>kHz</em>，换成 MHz 要除以 1000。</p>
+  <p>另一个坑是<strong>名字相近的属性</strong>：例如 <code>hipDeviceAttributeMaxRegistersPerBlock</code> 是每个 block 可用的寄存器总数（本机 131072；寄存器是每个线程私有的最快存储，Lab 1 §1.2 讲），与 LDS 容量毫无关系。</p>
+  <p>拿不准时，打开头文件看注释。注释没写单位时，可以凭数值的量级推断：例如 <code>prop.l2CacheSize</code> 的注释只写了 “L2 cache size”，查到 4194304，这只能是字节数（4 MiB）。</p>
 </div>
 
 <h3 id="s5-3"><span class="sec">§5.3</span>处理架构名字符串</h3>
 <p><code>hipDeviceProp_t::gcnArchName</code> 是一个以 <code>'\0'</code> 结尾的字符数组，本机的值是 <code>"gfx942:sramecc+:xnack-"</code>。冒号前是架构代号，后面是“目标特性”：<code>sramecc+</code> 表示片上存储开启了 ECC 校验，<code>xnack-</code> 表示关闭了 GPU 缺页重试。编译选项 <code>--offload-arch=gfx942</code> 只需要冒号前那部分。</p>
 <p>从 C 字符串中截取“某个分隔符之前的部分”，思路是三步：</p>
 <ol>
-  <li>用 <code>std::strchr(s, ':')</code> 找到第一个冒号的位置（找不到时返回 <code>nullptr</code>，此时整个字符串都要）。</li>
-  <li>两个指针相减得到要复制的长度；再确保它不超过目标数组容量减 1（要给 <code>'\0'</code> 留位置）。</li>
+  <li>用 <code>std::strchr(s, ':')</code> 找到第一个冒号的位置。找不到时它返回 <code>nullptr</code>，这时要复制整个字符串。</li>
+  <li>两个指针相减得到要复制的长度；再确保它不超过目标数组容量减 1，要给 <code>'\0'</code> 留位置。</li>
   <li>复制这么多个字符（<code>std::memcpy</code> 或 <code>std::strncpy</code>），<strong>然后手动在末尾写 <code>'\0'</code></strong>。</li>
 </ol>
 <div class="callout pitfall">
@@ -518,18 +541,22 @@ HIP_CHECK(hipDeviceGetAttribute(&amp;mem_khz, hipDeviceAttributeMemoryClockRate,
 <p>这台机器是多人共享的。跑任何东西之前，先看一眼各张卡的占用：</p>
 <pre><code class="language-bash">rocm-smi --showuse --showmemuse     # 每张卡的计算占用（GPU use %）和显存占用（VRAM %）
 rocm-smi                            # 概览：温度、功耗、频率、占用</code></pre>
-<p>输出里的 <code>GPU[0]</code> … <code>GPU[7]</code> 就是 8 张卡。<code>make grade</code> 会自动挑“计算占用 + 显存占用”最小的那张卡，并在第一行打印出来。本机也装了更新的 <code>amd-smi</code>，例如 <code>amd-smi static -g 7</code> 可以看到第 7 张卡的缓存、显存等静态信息（§2.3 的表中有几项就来自它）。</p>
+<p>输出里的 <code>GPU[0]</code> … <code>GPU[7]</code> 就是 8 张卡。<code>make grade</code> 会自动挑“计算占用 + 显存占用”最小的那张卡，并在第一行打印出来。本机也装了更新的 <code>amd-smi</code>，例如 <code>amd-smi static -g 7</code> 可以看到第 7 张卡的缓存、显存等静态信息，§2.3 的表中有几项就来自它。</p>
 
 <h3 id="s6-2"><span class="sec">§6.2</span>HIP_VISIBLE_DEVICES：选卡</h3>
-<p>环境变量 <code>HIP_VISIBLE_DEVICES</code> 决定程序能“看见”哪些 GPU。被选中的卡会<strong>重新从 0 编号</strong>：</p>
+<p>环境变量 <code>HIP_VISIBLE_DEVICES</code> 决定程序能“看见”哪些 GPU。被选中的卡会<strong>重新从 0 编号</strong>。下面的例子假设没有同时设置其他 GPU 可见性变量（见本节末尾）：</p>
 <pre><code class="language-bash">HIP_VISIBLE_DEVICES=7 ./build/run-a2     # 程序里只有一张卡，它就是 device 0（物理上的 7 号卡）
 HIP_VISIBLE_DEVICES=6,7 ./some_program   # 程序里有两张卡：device 0 = 物理 6 号，device 1 = 物理 7 号</code></pre>
-<p>这就是为什么 a2 的测试总是查询 <code>device 0</code>：无论判分脚本选了哪张物理卡，在程序看来它都是 0 号。<code>make grade</code> 和 <code>make run</code> 默认用 rocm-smi 自动挑最空闲的卡（跳过显存快满的卡，几张卡一样空时随机挑一张）；如果你已经设置了这个变量（或 <code>ROCR_VISIBLE_DEVICES</code>、<code>CUDA_VISIBLE_DEVICES</code>、<code>GPU_DEVICE_ORDINAL</code>），它们会尊重你的选择而不再自动挑卡，并在第一行说明用的是哪个变量。</p>
+<p>这就是为什么 a2 的测试总是查询 <code>device 0</code>：无论判分脚本选了哪张物理卡，在程序看来它都是 0 号。<code>make grade</code> 和 <code>make run</code> 默认用 rocm-smi 自动挑最空闲的卡（跳过显存快满的卡，几张卡一样空时随机挑一张）。如果你已经设置了这个变量（或 <code>ROCR_VISIBLE_DEVICES</code>、<code>CUDA_VISIBLE_DEVICES</code>、<code>GPU_DEVICE_ORDINAL</code>），它们会尊重你的选择、不再自动挑卡，并在第一行说明用的是哪个变量。</p>
+<details class="deep"><summary>同时设置了 ROCR_VISIBLE_DEVICES 时，编号怎么算</summary>
+  <p><code>ROCR_VISIBLE_DEVICES</code> 在更底层先过滤一次，<code>HIP_VISIBLE_DEVICES</code> 的编号是在过滤<em>之后</em>的列表里数的。本机实测（用 <code>hipDeviceProp_t::pciBusID</code> 核对物理卡）：<code>ROCR_VISIBLE_DEVICES=6,7 HIP_VISIBLE_DEVICES=0</code> 得到的是物理 6 号卡；<code>ROCR_VISIBLE_DEVICES=6,7 HIP_VISIBLE_DEVICES=7</code> 则一张卡也看不到。所以环境里已经有这类变量时，先确认可见的是哪几张卡，再决定 <code>HIP_VISIBLE_DEVICES</code> 写几。</p>
+</details>
 
 <h3 id="s6-3"><span class="sec">§6.3</span>rocprofv3：看 kernel 跑了多久</h3>
 <p><code>rocprofv3</code> 是 ROCm 自带的性能分析工具（本机 <code>/opt/rocm/bin/rocprofv3</code>）。最基本的用法是 kernel 跟踪：记录程序启动的每一个 kernel 的名字、启动参数和起止时间。在 <code>lab0-env/</code> 下先用 <code>make run A=a1</code> 编译出 <code>build/run-a1</code>，然后：</p>
 <pre><code class="language-bash">rocprofv3 --kernel-trace --stats --output-format csv -d prof -o a1 -- ./build/run-a1</code></pre>
-<p><code>--</code> 之后是要分析的程序及其参数。<code>--output-format csv</code> 不能省：ROCm 7 起 rocprofv3 默认只输出一个 rocpd 数据库文件（<code>&lt;主机名&gt;/&lt;进程号&gt;_results.db</code>），不加这个选项就找不到下面说的 CSV。运行时终端上会混有大量以 <code>W</code>/<code>E</code>/<code>I</code> 加日期开头的日志行，属于正常现象。结束后 <code>prof/</code> 下会出现几个 CSV 文件，最有用的两个：</p>
+<p><code>--</code> 之后是要分析的程序及其参数。<code>--output-format csv</code> 不能省：ROCm 7 起 rocprofv3 默认只输出一个 rocpd 数据库文件（<code>&lt;主机名&gt;/&lt;进程号&gt;_results.db</code>），不加这个选项就找不到下面说的 CSV。</p>
+<p>运行时终端上会出现带日期的日志行，开头的字母是日志级别：<code>I</code> 是信息（Info），<code>W</code> 是警告（Warning），<code>E</code> 是错误（Error）。遇到 W、E 时读一读具体内容，并确认目标程序正常结束、CSV 已经生成且包含你自己的 kernel。结束后 <code>prof/</code> 下会出现几个 CSV 文件，最有用的两个：</p>
 <ul>
   <li><code>a1_kernel_stats.csv</code>：按 kernel 名字汇总的调用次数、总耗时、平均耗时（纳秒）。</li>
   <li><code>a1_kernel_trace.csv</code>：每次启动一行，含 <code>Kernel_Name</code>、<code>Start_Timestamp</code>/<code>End_Timestamp</code>（纳秒）、<code>Workgroup_Size_X</code>、<code>Grid_Size_X</code>、<code>VGPR_Count</code> 等。</li>
@@ -541,7 +568,7 @@ HIP_VISIBLE_DEVICES=6,7 ./some_program   # 程序里有两张卡：device 0 = �
 "fill_ids_kernel(int*, int)",5,31080,6216.000000,...</code></pre>
 <p>你自己的 kernel 出现在列表里；名字以 <code>__amd_rocclr_</code> 开头的是 HIP 运行时内部的 kernel，由 <code>hipMemset</code>/<code>hipMemcpy</code> 这类调用产生。</p>
 <div class="callout warn">
-  <p>trace 里的 <code>Grid_Size_X</code> 是<strong>线程总数</strong>（AMD/HSA 的约定），不是 block 个数。例如 grid = 4、block = 256 时它显示 1024。和 HIP 启动语法里的 grid 含义不同，读的时候别混淆。</p>
+  <p>本课用的是一维启动，trace 里的 <code>Grid_Size_X</code> 等于<strong>线程总数</strong>，不是 block 个数。例如 grid = 4、block = 256 时它显示 1024。这和 HIP 启动语法里 grid 的含义不同，读的时候别混淆。二维、三维启动时，X 方向之外还有 <code>Grid_Size_Y</code>、<code>Grid_Size_Z</code>，总线程数是三者之积。</p>
 </div>
 
 <footer class="doc-footer">
