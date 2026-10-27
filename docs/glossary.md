@@ -29,13 +29,14 @@
 | CU | Compute Unit，计算单元。一个 block 整个放在一个 CU 上执行；每个 CU 有 4 个 SIMD 和 64 KiB LDS。 | Lab 0 §2.1 |
 | SIMD | CU 里真正执行 wavefront 指令的单元，每个 CU 有 4 个。每个 SIMD 上可以同时驻留多个 wavefront。 | Lab 0 §2.1 |
 | wavefront | 硬件一起执行的一组线程，本机 64 个。同一个 wavefront 的线程每次执行同一条指令。 | Lab 0 §2.2 |
-| lane | wavefront 里的一个线程，编号 0–63。 | Lab 0 §2.2 |
+| lane | wavefront 里的一个线程，编号 0–63。 | Lab 0 §2.2（图示），Lab 1 §2.1 |
 | LDS | Local Data Share，每个 CU 上 64 KiB 的片上存储。同一个 block 的线程共享，在 kernel 里用 `__shared__` 声明。 | Lab 0 §2.1 |
 | HBM | GPU 的主存，也就是显存。本机约 192 GiB，所有 CU 都能访问；容量最大，访问延迟也最长。 | Lab 0 §2.1 |
 | L1 | 每个 CU 里 32 KiB 的向量数据缓存，由硬件自动管理。 | Lab 0 §2.1 |
 | L2 | 每个 XCD 里 4 MiB 的缓存，由该 XCD 上的 CU 共享，硬件自动管理。 | Lab 0 §2.1 |
 | Infinity Cache | 整张卡共享的 256 MiB 末级缓存，位于 L2 和 HBM 之间。 | Lab 0 §2.1 |
 | VGPR | 向量通用寄存器，每个 lane 私有，是最快的存储。局部标量通常放在 VGPR 里，但实际位置由编译器决定。 | Lab 1 §1.2 |
+| SGPR | 标量通用寄存器，一个 wavefront 的所有 lane 共用一份，常用来存 kernel 参数这类对所有 lane 都相同的值。 | Lab 1 §1.3（折叠框） |
 | cache line | 缓存和显存之间搬运数据的最小单位，本机 128 字节。 | Lab 1 §1.2 |
 | matrix core | CU 里专门做矩阵乘加的硬件单元，通过 MFMA 指令使用。 | Lab 1 §5.5 |
 | SPX | MI308X 的一种分区模式：整张卡是一个 HIP 设备，4 个 XCD 共 80 个 CU。 | Lab 0 §2.3 |
@@ -57,6 +58,7 @@
 | grid | 一次 kernel 启动的全部 block。 | Lab 0 §2.2 |
 | `__global__` | 声明 kernel 的关键字：函数在 GPU 上执行，由主机代码启动。 | Lab 0 §3.1 |
 | `<<< >>>` 启动语法 | 启动 kernel 的写法：`kernel<<<grid, block, LDS 字节数, stream>>>(参数)`。 | Lab 0 §3.1 |
+| 动态 LDS | 用 `extern __shared__` 声明、大小在启动时由 `<<< >>>` 第 3 个参数指定的 LDS。它叠加在静态 `__shared__` 数组之上；本课不用，第 3 个参数填 0。 | Lab 1 §2.2 |
 | `threadIdx.x` | 内建变量：当前线程在 block 里的 x 方向下标。 | Lab 0 §3.2 |
 | `blockIdx.x` | 内建变量：当前 block 在 grid 里的 x 方向下标。 | Lab 0 §3.2 |
 | `blockDim.x` | 内建变量：每个 block 在 x 方向的线程数。 | Lab 0 §3.2 |
@@ -80,6 +82,7 @@
 | grid-stride loop | 每个线程从自己的全局下标出发，每次前进整个 grid 的线程数，直到越过 n。这样 grid 大小可以与 n 无关。 | Lab 1 §2.5 |
 | `__shared__` | 在 kernel 里声明 LDS 变量的关键字，同一个 block 的线程看到同一份。 | Lab 1 §3.4 |
 | `__syncthreads()` | block 级屏障：block 里所有线程都到达后才继续，并保证之前的 LDS 写入对 block 内其他线程可见。 | Lab 1 §3.5 |
+| 写后读 / 读后写 | 两种需要屏障的依赖。写后读：读 LDS 之前，别的线程必须已经写完；读后写：覆盖 LDS 之前，别的线程必须已经读完。 | Lab 1 §5.3 |
 | 数据竞争 | 两个线程访问同一地址、至少一个是写，而中间没有同步。结果取决于执行顺序，可能时对时错。 | Lab 1 §3.5 |
 | 原子操作 | 对一个地址的“读—改—写”作为不可分割的整体完成，多个线程同时做也不会丢失更新。 | Lab 1 §4.5 |
 | `atomicAdd` | 原子加：把一个值加到指定地址上，返回加之前的旧值。多个线程的加法都不会丢，但先后顺序不确定。 | Lab 1 §4.5 |
@@ -87,7 +90,7 @@
 | 归约 | reduction，把很多个数用一种运算（求和、求最大值等）合成一个或少数几个结果。 | Lab 1 §4 |
 | 树形归约 | 每一层把数据两两合并、数量减半的归约方式，n 个数需要 log₂n 层。 | Lab 1 §4.2 |
 | 行主序 | row-major，矩阵按行连续存放，元素 (i, j) 的偏移是 i × 每行元素数 + j。 | Lab 1 §5.1 |
-| scratch | 每个线程私有、放在显存里的存储。寄存器不够（溢出）或局部数组无法放进寄存器时，编译器会用它，访问比寄存器慢得多。 | Lab 1 §5.4 |
+| scratch | 每个线程私有、放在显存里的存储。寄存器不够（溢出）或局部数组无法放进寄存器时，编译器会用它，访问比寄存器慢得多。 | Lab 1 §1.2，§5.4 详讲 |
 
 ## 性能
 
@@ -96,19 +99,24 @@
 | 延迟掩盖 | 一个 wavefront 等显存数据时，SIMD 去执行另一个驻留的 wavefront，让等待的时间不被浪费。 | Lab 1 §1.1 |
 | occupancy | 占用率：每个 SIMD 上实际驻留的 wavefront 数，本机最多 8 个。受寄存器、LDS 用量和 block 大小限制。驻留越多越容易掩盖延迟，但不是越高越快。 | Lab 1 §2.4 |
 | 合并访存 | coalesced access：同一个 wavefront 的 lane 访问相邻地址，硬件就能把它们合并成少数几次内存事务。例如 64 个连续 float（256 字节）对齐时只涉及 2 条 cache line。 | Lab 1 §3.1 |
+| 广播 | 同一个 wavefront 的多个 lane 读同一个地址时，硬件只取一次再分给这些 lane；在 LDS 里不算 bank conflict。 | Lab 1 §3.6 |
 | bank conflict | LDS 分成 32 个 bank，每个 bank 每周期只服务一个地址。同一批访问（每 lane 4 字节时是半个 wavefront）里有 k 个 lane 访问同一 bank 的不同地址，就要串行 k 次。 | Lab 1 §3.6 |
 | LDS padding | 给 LDS 二维数组每行多开几列（常见是 1 列）不存数据，错开各行起始的 bank，消除按列访问时的 bank conflict。 | Lab 1 §3.6 |
 | swizzle | 不多占 LDS、通过对坐标做 XOR 等变换改变数据到 bank 的映射，用来消除 bank conflict。CK-Tile 里对应 xor 变换。 | Lab 3 §1.6 |
-| FMA | Fused Multiply-Add，一条指令算 a × b + c，只舍入一次。一次 FMA 计 2 FLOP。 | Lab 1 §1.4 |
-| FLOP | 一次浮点运算。GFLOPS = 每秒 10⁹ 次，TFLOPS = 每秒 10¹² 次。 | Lab 1 §1.4 |
-| 计算强度 | 每访问 1 字节显存做多少次浮点运算（FLOP/B），用来判断 kernel 受带宽限制还是受算力限制。 | Lab 1 §1.4 |
+| FMA | Fused Multiply-Add，一条指令算 a × b + c，只舍入一次。一次 FMA 计 2 FLOP。 | Lab 1 §1.3 |
+| FLOP | 一次浮点运算。GFLOPS = 每秒 10⁹ 次，TFLOPS = 每秒 10¹² 次。 | Lab 1 §1.3 |
+| 计算强度 | 每访问 1 字节显存做多少次浮点运算（FLOP/B）。在只看带宽和算力的简单模型里，它决定哪条上限更低，用来指导优化方向；实际瓶颈还要测量。 | Lab 1 §1.4 |
 | fp32 向量峰值 | 不用 matrix core 时 fp32 的理论算力：CU 数 × 每 CU 每周期 FLOP 数 × 频率。本机约 37.9 TFLOPS，实测 FMA 吞吐约 28 TFLOPS。 | Lab 1 §1.3 |
 | packed 指令 | 一条指令同时处理两组操作数，例如 `v_pk_fma_f32` 一次做两个 fp32 FMA。 | Lab 1 §1.3 |
 | 有效带宽 | kernel 逻辑上必须读写的字节数 ÷ 耗时，用来衡量访存类 kernel。 | Lab 1 §3.7 |
 | D2D 拷贝带宽 | 同一进程里 `hipMemcpy` 显存到显存拷贝的实测带宽，按（读 + 写）字节 ÷ 时间计算，本机约 2 TB/s。Lab 1 的访存类性能用例以它为基准。 | Lab 1 §1.3 |
+| 微基准 | 只测一种操作（如拷贝、FMA、LDS 读取）的小测试程序。它的结果是这个程序达到的性能，不是硬件上限。 | Lab 1 §1.3 |
+| 比值 | 本课程性能用例的归一化方式：你的带宽（或 GFLOPS）÷ 同进程实测的拷贝带宽（或 FMA 吞吐）。Lab 1 写成百分比，Lab 2 起直接写比值。 | Lab 1 §1.3 |
 | 数据复用 | 把数据搬到更近的存储（LDS、寄存器）后多次使用，减少显存访问。 | Lab 1 §5.2 |
 | 分块 | tiling：把大问题切成小块，每块的数据先装进 LDS 或寄存器再反复使用。 | Lab 1 §5.2 |
 | 寄存器分块 | 让每个线程负责多个输出元素，在寄存器里复用已读入的数据，进一步提高计算强度。 | Lab 1 §5.4 |
+| `__launch_bounds__` | 写在 kernel 前、告诉编译器 block 最多有多少线程的属性，编译器据此估算资源和占用率。 | Lab 1 §5.4（折叠框） |
+| 循环展开 | 编译器把循环体按次数复制多份，每份里的循环变量换成常数。`#pragma unroll` 可以明确要求展开。 | Lab 1 §5.4 |
 
 ## 数值
 

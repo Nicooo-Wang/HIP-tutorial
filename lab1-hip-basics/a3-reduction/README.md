@@ -25,7 +25,7 @@ in --(多 block，每个 block 一个部分和)--> ws[0..blocks) --(1 个 block 
 | `a3-1` | `partial_sum_kernel` | grid-stride loop：每个线程累加自己负责的元素 | §4.1（复习 a1 Part B） |
 | `a3-2` | `block_reduce_lds` | 用 `__shared__` 数组做树形归约，思考每一层之后需要什么 | §4.2 |
 | `a3-3` | `wave_reduce` | 用 `__shfl_down` 在一个 wavefront 内归约（wave64，用 `warpSize`） | §4.3 |
-| `a3-4` | `block_reduce_shfl` | wave 内归约 → 写入 LDS → 第 0 个 wave 再归约 | §4.4 |
+| `a3-4` | `block_reduce_shfl` | wavefront 内归约 → 写入 LDS → 第 0 个 wavefront 再归约 | §4.4 |
 
 注意：不要写 `out`、`ws` 之外的内存，也不要修改输入；不要假设 `ws` 或 `out` 里已有任何值。
 
@@ -39,10 +39,10 @@ make run A=a3 CASE=shfl_bandwidth        # 只运行一个用例，看原始输�
 | 用例 | 分值 | 检查什么 |
 |------|------|----------|
 | `lds_exact_ones` | 3 | LDS 版本，全 1 输入，n = 1、63、64、65、257、4097、2^20+1 等，以及 2^22+3、2^23+1、2^24−1 这样的大 n，**精确**比较；整组重复 3 遍 |
-| `lds_random` | 2 | LDS 版本，随机输入，相对容差比较 |
+| `lds_random` | 2 | LDS 版本，随机输入，按容差比较（容差随输入绝对值之和缩放） |
 | `shfl_exact_ones` | 3 | shuffle 版本，同上 |
 | `shfl_random` | 2 | shuffle 版本，同上 |
-| `repeatable_output` | 1 | 连续调用两次，结果必须一致 |
+| `repeatable_output` | 1 | 连续调用两次，两次结果按容差比较（检查是否累加到了上一次的 out 上） |
 | `shfl_bandwidth`（性能） | 3 | n = 2^26 − 1 的读带宽须达到同进程实测拷贝带宽的 28%；输入是随机的 0/1，结果须精确等于 1 的个数 |
 
 全 1 输入在 n < 2^24 时，任何求和顺序的结果都精确等于 n，所以可以精确比较，漏掉或重复一个元素都会被抓住。
@@ -66,7 +66,7 @@ make run A=a3 CASE=shfl_bandwidth        # 只运行一个用例，看原始输�
 
 - LDS 版：每个线程的值什么时候进 LDS？读别的线程写的槽位之前要保证什么？这个保证放在哪里才能让 block 里**每个**线程都执行到（包括这一层不活跃的线程）？
 - `wave_reduce`：在讲义图 4.2 的 8 lane 玩具上用 a…h 推演：第一次 `__shfl_down` 的偏移取多少，才能让 lane 0..3 各自拿到一个“还没被加过”的值？之后每次偏移怎么变、一共要几次？把 8 换成 `warpSize` 再写代码。
-- `block_reduce_shfl`：一个 block 有几个 wave？每个 wave 的部分和放在哪、谁来读？第 0 个 wave 里没有对应部分和的 lane 该拿什么值（讲义 §4.4）？
+- `block_reduce_shfl`：一个 block 有几个 wavefront？每个 wavefront 的部分和放在哪、谁来读？第 0 个 wavefront 里没有对应部分和的 lane 该拿什么值（讲义 §4.4）？
 - 第 2 遍的输入只有 `blocks` 个元素，你的 grid-stride loop 不用改也应该对——想想为什么。
 
 </details>
