@@ -115,7 +115,7 @@ Score: 0/6</code></pre>
 <p>测试给每个缓冲区的前后各多分配了 256 KiB 的“哨兵区”，整块填满一个特殊的 32 位值。这个值按浮点数解释是 NaN；按 32 位整数读，大约是 21 亿。kernel 结束后逐字节检查哨兵区：若被改写，说明你的代码<strong>写</strong>到了数组范围之外。</p>
 <p>越界<strong>读</strong>通常也会暴露：读到的哨兵值当作浮点数做加法、乘法（哪怕乘以 0）会得到 NaN，当作整数参与运算会混进一个约 21 亿的大数，逐元素比较时就能发现。但哨兵检查不能保证抓到所有越界访问。</p>
 <details class="deep"><summary>哪些越界读可能漏掉</summary>
-  <p>并不是所有运算都会把 NaN 传下去。例如 <code>fmaxf(NaN, 0.0f)</code> 返回 0：它只要有一个操作数不是 NaN，就返回那一个。受污染的中间结果也可能被后面的代码丢弃。测试只能检查最终输出，看不到中间过程。</p>
+  <p>并不是所有运算都会把 NaN 传下去。例如 <code>fmaxf(NaN, 0.0f)</code> 返回 0：两个操作数中恰有一个是 NaN 时，<code>fmaxf</code> 返回另一个。受污染的中间结果也可能被后面的代码丢弃。测试只能检查最终输出，看不到中间过程。</p>
 </details>
 <figure class="diagram">
   <svg viewBox="0 0 640 132" role="img" aria-labelledby="fig12-t">
@@ -251,9 +251,9 @@ make run A=a1 CASE=single_element  # 只运行一个用例</code></pre>
 </div>
 
 <h3 id="s2-2"><span class="sec">§2.2</span>软件层次如何落到硬件上</h3>
-<p>写 kernel 时，你描述的是一个三层的“线程组织”：一次 kernel 启动产生一个 <strong>grid</strong>；grid 由许多 <strong>block</strong> 组成；每个 block 由许多 <strong>thread</strong>（线程）组成。硬件运行时，再把 block 内的线程每 64 个打包成一个 <strong>wavefront</strong>；在编程模型里，这 64 个线程同时执行同一条指令。wavefront 里的每个线程也叫一个 <strong>lane</strong>，编号 0–63。</p>
+<p>写 kernel 时，你描述的是一个三层的“线程组织”：一次 kernel 启动产生一个 <strong>grid</strong>；grid 由许多 <strong>block</strong> 组成；每个 block 由许多 <strong>thread</strong>（线程）组成。硬件运行时，再把 block 内的线程每 64 个打包成一个 <strong>wavefront</strong>；在编程模型里，wavefront 中当前参与执行的线程同时执行同一条指令。wavefront 里的每个线程也叫一个 <strong>lane</strong>，编号 0–63。</p>
 <details class="deep"><summary>64 个线程真的是“同时”执行吗</summary>
-  <p>物理上，每个 SIMD 的向量运算单元一次处理 16 个 lane，所以一条常规的 32 位向量指令要分 4 个周期才对整个 wavefront 执行完；FP64、矩阵指令等的周期数不同。但从编程模型看，64 个 lane 始终步调一致地执行同一条指令，写代码时按“同时”理解即可。</p>
+  <p>物理上，每个 SIMD 的向量运算单元一次处理 16 个 lane，所以一条常规的 32 位向量指令要分 4 个周期才对整个 wavefront 执行完；FP64、矩阵指令等的周期数不同。但从编程模型看，同一时刻 wavefront 中当前参与执行的 lane 执行的是同一条指令，写代码时按“同时”理解即可。条件不成立的 lane 会跳过相应的操作，例如边界检查让越界线程跳过写内存（§3.2；Lab 1 §2.1 详讲）。</p>
 </details>
 <figure class="diagram">
   <svg viewBox="0 0 640 236" role="img" aria-labelledby="fig22-t">

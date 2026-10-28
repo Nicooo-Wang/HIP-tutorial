@@ -16,7 +16,7 @@
     <p class="lede">一门在 MI308X 上动手写 GPU kernel 的自学课程。从线程层级和访存讲起，经过 CK-Tile 与 MFMA tiled GEMM，再到多卡通信、通算融合，最后落到 mega kernel 技术。每个概念先在讲义里讲清楚，再用一个能自动判分的作业练一遍。</p>
     <p class="hw">目标硬件：AMD MI308X（gfx942，80 CU，wavefront 64，LDS 64 KiB / block），ROCm 7.2</p>
   </div>
-  <svg class="wave-art" viewBox="-1 -1 89 102" role="img" aria-label="一个 wavefront 的 64 个 lane">
+  <svg class="wave-art" viewBox="-1 -1 89 102" role="img" aria-label="一个 wavefront 的 64 个线程">
       <rect x="0" y="0" width="9" height="9" rx="1.5" class="on"/>
       <rect x="11" y="0" width="9" height="9" rx="1.5" class="on"/>
       <rect x="22" y="0" width="9" height="9" rx="1.5" class="on"/>
