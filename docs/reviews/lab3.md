@@ -211,5 +211,5 @@ Lab 2 只改了讲义一行文字，`make verify` 复跑仍为 VERIFY OK。harne
 
 留给用户决定的事项：
 
-- 小部件 2.1 的自检 bug（`tutorial.html` 里 dist-explorer 小部件脚本的自检项）：预设 3 不提示 `sweep_tile` 不可用，预设 6 对一维结果仍显示“沿列归约”。修复需要改脚本。
+- 已处理：小部件 2.1（dist-explorer）的自检改为按讲义结论分别核对 `sweep_tile`（每个 X 维都要有 Y，§3.3）与沿列归约（行方向有 Y、一行不跨 wavefront，§3.1–§3.2；一维 tile 不适用）；预设 3 现在提示 X1 没有 Y、不能用 `sweep_tile`，预设 6 提示一维 tile 不再有列可归约。图注里的临时提醒相应改写。控件、预设与 id 未动，七个预设在浏览器中逐个核对，控制台无报错。
 - 原有实测（各 peek 实验、redistribute、scale_strip 运行结果，承诺 4/2/1 的 3.3/2.5/1.7 TB/s，sync 与 xor_sync 的 `ds_bpermute` 条数，8 × 60 pad 求最大值得 0，跨 wavefront sync 得 64）沿用，本轮未重测；源码行号只核对了改动涉及的几处。

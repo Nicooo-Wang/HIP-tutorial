@@ -903,10 +903,10 @@ note: insert an explicit cast to silence this issue</code></pre>
     </g>
     <text x="10" y="116" font-size="12">sweep_tile 在编译期展开成 8 次调用，每次 idx 不同（以 lane 0 为例）：</text>
     <g font-size="11.5" class="mono">
-      <text x="24" y="138">idx ↔ (y₀=0, y₁=0)：ty(idx) = alpha * tx[idx]   ← 元素 0</text>
-      <text x="24" y="156">idx ↔ (y₀=0, y₁=1)：ty(idx) = alpha * tx[idx]   ← 元素 1</text>
+      <text x="24" y="138">当 idx 编码 (y₀=0, y₁=0) 时：ty(idx) = alpha * tx[idx]   ← 元素 0</text>
+      <text x="24" y="156">当 idx 编码 (y₀=0, y₁=1) 时：ty(idx) = alpha * tx[idx]   ← 元素 1</text>
       <text x="24" y="174">…</text>
-      <text x="24" y="190">idx ↔ (y₀=1, y₁=3)：ty(idx) = alpha * tx[idx]   ← 元素 259</text>
+      <text x="24" y="190">当 idx 编码 (y₀=1, y₁=3) 时：ty(idx) = alpha * tx[idx]   ← 元素 259</text>
     </g>
     <defs><marker id="arr35" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--d-muted)"/></marker></defs>
   </svg>

@@ -650,7 +650,7 @@ thread 127: (30,28) (30,29) (30,30) (30,31) (31,28) (31,29) (31,30) (31,31)</cod
   <ul class="checks" data-role="checks"></ul>
   <svg data-role="svg" viewBox="0 0 640 300" role="img" aria-label="tile 中每个元素按负责它的 wavefront 着色，格内是 lane id"></svg>
   <p class="detail-line" data-role="detail" aria-live="polite"></p>
-  <figcaption><b>小部件 2.1</b>颜色 = 负责该元素的 wavefront，格内小字 = lane id（格子太小时省略），红框 = 当前线程持有的全部元素，其余线程的元素变淡。斜线格 = 没有线程负责；角上的数字 = 被几个线程复制持有（R）。两条约定：① 一个 P 认领多段时，小部件按“X0 的段、X1 的段、R 的段”的顺序从高位到低位拆 lane id（或 warp id）；CK-Tile 里这个顺序由你写的 P→ 列表决定，§2.2 说的“反过来写”在小部件里画不出来。② Y 维按同样的顺序编号为 Y0、Y1…，寄存器下标按 Y 的行主序排列。自检项里关于 Y 的那一条只看行方向；<code>sweep_tile</code> 要求<em>每个</em> X 维都有 Y（§3.3），列方向请自己核对。</figcaption>
+  <figcaption><b>小部件 2.1</b>颜色 = 负责该元素的 wavefront，格内小字 = lane id（格子太小时省略），红框 = 当前线程持有的全部元素，其余线程的元素变淡。斜线格 = 没有线程负责；角上的数字 = 被几个线程复制持有（R）。两条约定：① 一个 P 认领多段时，小部件按“X0 的段、X1 的段、R 的段”的顺序从高位到低位拆 lane id（或 warp id）；CK-Tile 里这个顺序由你写的 P→ 列表决定，§2.2 说的“反过来写”在小部件里画不出来。② Y 维按同样的顺序编号为 Y0、Y1…，寄存器下标按 Y 的行主序排列。自检项按讲义的结论核对：能否向量化（§2.1）、能否用 <code>sweep_tile</code>（每个 X 维都要有 Y，§3.3）、能否沿列归约（§3.1–§3.2）。</figcaption>
 </figure>
 <div class="callout pitfall" data-title="lane 段之积必须是 64">
   <p>CK-Tile 不检查这一条。lane 认领的段之积小于 64 时，多出来的 lane 算出的坐标落在 tile 之外；大于 64 时，有一部分元素永远没有 lane 去拿（lane id 最大只有 63）。两种情况都能编译、能运行，只是静默出错，和 Lab 2 “1 个 P 维用在多 wavefront 上”是同一类坑。在小部件里把某个 lane 段的长度改一下就能看到。</p>
@@ -1837,10 +1837,21 @@ TUT.registerWidget("dist-explorer", function (el) {
     if (!hasR) li(unowned === 0 && multi === 0, "每个元素恰好一个线程" + (unowned ? "：" + unowned + " 个无人负责" : "") + (multi ? "：" + multi + " 个被重复负责" : ""));
     else li(unowned === 0 ? null : false, "有 R 段：每个元素被 " + maxRep + " 个线程复制持有" + (unowned ? "；" + unowned + " 个无人负责" : ""));
     if (d.outside) li(false, d.outside + " 个（线程, Y）组合的坐标落在 tile 之外");
-    var last = c.X1.length ? c.X1[c.X1.length - 1] : null;
-    if (last) li(last.own === "Y" ? true : null, last.own === "Y" ? "X1 的最后一段由 Y 认领：一次最多访问 " + last.len + " 个连续元素" : "X1 的最后一段不是 Y：每次只能访问 1 个元素（不能向量化）");
-    var y0 = c.X0.some(function (s) { return s.own === "Y"; });
-    li(y0 ? true : null, y0 ? "行方向有 Y：沿列归约后仍保留至少一个 Y（§3.1）" : "行方向没有 Y：沿列归约会编译失败（§3.1），sweep_tile 也不能用（§3.3）");
+    var hasX1 = c.X1.length > 0, lastName = hasX1 ? "X1" : "X0";
+    var lastG = c[lastName], last = lastG.length ? lastG[lastG.length - 1] : null;
+    if (last) li(last.own === "Y" ? true : null, last.own === "Y" ? lastName + " 的最后一段由 Y 认领：一次最多访问 " + last.len + " 个连续元素" : lastName + " 的最后一段不是 Y：每次只能访问 1 个元素（不能向量化）");
+    var hasOwn = function (g, o) { return c[g].some(function (s) { return s.own === o; }); };
+    var yX0 = hasOwn("X0", "Y"), yX1 = hasOwn("X1", "Y");
+    var noY = [];
+    if (!yX0) noY.push("X0");
+    if (hasX1 && !yX1) noY.push("X1");
+    // sweep_tile 要求每个 X 维都有 Y（§3.3）
+    li(noY.length ? null : true, noY.length ? noY.join("、") + " 没有 Y：不能用 sweep_tile，逐元素运算改用 tile_elementwise_in（§3.3）" : "每个 X 维都有 Y：可以用 sweep_tile（§3.3）");
+    // 沿列（X1）归约：只适用于二维 tile（§3.1–§3.2）
+    if (!hasX1) li(null, "一维 tile（例如归约后的结果）：不再有列可归约");
+    else if (!yX0) li(null, "行方向没有 Y：沿列归约会编译失败（§3.1）");
+    else if (hasOwn("X1", "W")) li(null, "行方向有 Y，但列方向有 warp 段：一行跨了 wavefront，沿列归约后 block_tile_reduce_sync 合不起来（§3.2）");
+    else li(true, "行方向有 Y、一行不跨 wavefront：可以沿列归约，结果保留至少一个 Y（§3.1–§3.2）");
 
     rngT.max = d.T - 1;
     if (selT > d.T - 1) selT = 0;
